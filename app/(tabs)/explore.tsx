@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { StyleSheet, View, Text, FlatList, Dimensions, ViewToken, AppState, LayoutChangeEvent, Pressable } from 'react-native';
+import { StyleSheet, View, Text, FlatList, Dimensions, ViewToken, AppState, LayoutChangeEvent, Pressable, Alert } from 'react-native';
 import { Video, ResizeMode, AVPlaybackStatus } from 'expo-av';
+import * as Sharing from 'expo-sharing';
 import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { DownloadService, ReelData } from '../../services/download';
+import { DownloadService, ReelData, DownloadEvents } from '../../services/download';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const { height: windowHeight, width: windowWidth } = Dimensions.get('window');
@@ -14,7 +15,12 @@ export default function OfflineReelsFeed() {
   const [reels, setReels] = useState<ReelData[]>([]);
   const [loading, setLoading] = useState(true);
   const [itemHeight, setItemHeight] = useState(Dimensions.get('window').height - 80);
+  const [autoDelete, setAutoDelete] = useState(false);
   
+  // Keep a synchronous ref of reels to prevent stale closures in onViewableItemsChanged
+  const reelsRef = useRef<ReelData[]>(reels);
+  useEffect(() => { reelsRef.current = reels; }, [reels]);
+
   // Track which reel is currently visible on screen
   const [activeVideoIndex, setActiveVideoIndex] = useState(0);
 
@@ -22,7 +28,20 @@ export default function OfflineReelsFeed() {
   const flatListRef = useRef<FlatList>(null);
   
   // Ref to track if we've successfully scrolled to the initial index yet
+  // Ref to track if we've successfully scrolled to the initial index yet
   const hasInitializedScroll = useRef(false);
+
+  useEffect(() => {
+    const handleToggleSave = (data: { id: string, isSaved: boolean }) => {
+      setReels(prevReels => prevReels.map(r => 
+        r.id === data.id ? { ...r, isSaved: data.isSaved } : r
+      ));
+    };
+    DownloadEvents.on('toggleSave', handleToggleSave);
+    return () => {
+      DownloadEvents.off('toggleSave', handleToggleSave);
+    };
+  }, []);
 
   // Load the downloaded videos from storage when this tab is focused
   useFocusEffect(
@@ -32,8 +51,10 @@ export default function OfflineReelsFeed() {
       const loadReels = async () => {
         try {
           const downloadedReels = await DownloadService.getDownloadedReels();
+          const autoDelEnabled = await DownloadService.getAutoDeleteEnabled();
           if (isActive) {
             setReels(downloadedReels);
+            setAutoDelete(autoDelEnabled);
             
             // Try to load the user's last saved scroll position
             const savedIndexStr = await AsyncStorage.getItem(LAST_VIEWED_INDEX_KEY);
@@ -66,12 +87,27 @@ export default function OfflineReelsFeed() {
   const onViewableItemsChanged = useCallback(({ viewableItems }: { viewableItems: ViewToken[] }) => {
     if (viewableItems.length > 0) {
       const newActiveIndex = viewableItems[0].index || 0;
-      setActiveVideoIndex(newActiveIndex);
+      
+      setActiveVideoIndex(prevIndex => {
+        // Auto-delete logic: If we swiped down to a new video, and auto-delete is ON
+        if (autoDelete && newActiveIndex > prevIndex) {
+          const reelToMaybeDelete = reelsRef.current[prevIndex];
+          if (reelToMaybeDelete && !reelToMaybeDelete.isSaved) {
+            // Hard delete the previous reel since we swiped past it
+            DownloadService.deleteReel(reelToMaybeDelete.id).then(() => {
+              // We don't remove it from the FlatList local state to prevent aggressive scroll jumping,
+              // but it'll be gone next time the app loads.
+              console.log('Auto-deleted reel:', reelToMaybeDelete.id);
+            });
+          }
+        }
+        return newActiveIndex;
+      });
       
       // Save this position to persistence storage immediately
       AsyncStorage.setItem(LAST_VIEWED_INDEX_KEY, newActiveIndex.toString()).catch(() => {});
     }
-  }, []);
+  }, [autoDelete]);
 
   const viewabilityConfig = useRef({
     itemVisiblePercentThreshold: 50, // Consider a video 'active' when it takes up at least 50% of the screen
@@ -118,6 +154,10 @@ export default function OfflineReelsFeed() {
     );
   }
 
+  const handleDeleteReel = (id: string) => {
+    setReels(prev => prev.filter(r => r.id !== id));
+  };
+
   return (
     <View style={styles.container} onLayout={onContainerLayout}>
       <FlatList
@@ -130,6 +170,7 @@ export default function OfflineReelsFeed() {
             item={item}
             isActive={index === activeVideoIndex}
             itemHeight={itemHeight}
+            onDelete={handleDeleteReel}
           />
         )}
         pagingEnabled // Enforces snapping to item boundaries (TikTok style)
@@ -151,8 +192,10 @@ export default function OfflineReelsFeed() {
 // ---------------------------------------------------------------------------------
 // Sub-component for individual Reels
 // ---------------------------------------------------------------------------------
-const ReelItem = ({ item, isActive, itemHeight }: { item: ReelData; isActive: boolean; itemHeight: number }) => {
+const ReelItem = ({ item, isActive, itemHeight, onDelete }: { item: ReelData; isActive: boolean; itemHeight: number; onDelete: (id: string) => void }) => {
   const videoRef = useRef<Video>(null);
+  const [isSavedLocally, setIsSavedLocally] = useState<boolean>(item.isSaved || false);
+  const [isDeleted, setIsDeleted] = useState(false);
   
   // Manage Video play state globally using AppState and isFocused
   const [appState, setAppState] = useState(AppState.currentState);
@@ -162,10 +205,20 @@ const ReelItem = ({ item, isActive, itemHeight }: { item: ReelData; isActive: bo
     const subscription = AppState.addEventListener('change', nextAppState => {
       setAppState(nextAppState);
     });
+    
+    // Listen for background auto-deletions to update this specific component
+    const handleDeleted = (deletedId: string) => {
+      if (deletedId === item.id) {
+        setIsDeleted(true);
+      }
+    };
+    DownloadEvents.on('delete', handleDeleted);
+    
     return () => {
       subscription.remove();
+      DownloadEvents.off('delete', handleDeleted);
     };
-  }, []);
+  }, [item.id]);
 
   const [isMuted, setIsMuted] = useState(false);
 
@@ -182,6 +235,63 @@ const ReelItem = ({ item, isActive, itemHeight }: { item: ReelData; isActive: bo
     setIsMuted(!isMuted);
   };
 
+  const handleToggleSave = async () => {
+    const updated: any = await DownloadService.toggleSaveReel(item.id);
+    if (updated) {
+      setIsSavedLocally(updated.isSaved || false);
+    }
+  };
+
+  const handleDelete = () => {
+    Alert.alert(
+      "Delete Reel",
+      "Are you sure you want to completely delete this reel from your device?",
+      [
+        { text: "Cancel", style: "cancel" },
+        { 
+          text: "Delete", 
+          style: "destructive",
+          onPress: async () => {
+            const success = await DownloadService.deleteReel(item.id);
+            if (success) {
+               onDelete(item.id);
+            } else {
+               Alert.alert("Error", "Failed to delete reel.");
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const handleSaveToGallery = async () => {
+    try {
+      const isAvailable = await Sharing.isAvailableAsync();
+      if (!isAvailable) {
+        Alert.alert('Not Available', 'Sharing is not available on this device.');
+        return;
+      }
+      // Opens the native Android share sheet — user can choose to save to gallery, send via WhatsApp, etc.
+      // Zero permissions needed.
+      await Sharing.shareAsync(item.localUri, {
+        mimeType: 'video/mp4',
+        dialogTitle: 'Save reel to gallery',
+        UTI: 'public.movie',
+      });
+    } catch (e: any) {
+      Alert.alert('Error', 'Could not share: ' + e.message);
+    }
+  };
+
+  if (isDeleted) {
+    return (
+      <View style={[styles.reelContainer, { height: itemHeight }]}>
+        <Ionicons name="trash-outline" size={64} color="#444" />
+        <Text style={styles.deletedText}>This reel was auto-deleted to save space.</Text>
+      </View>
+    );
+  }
+
   return (
     <View style={[styles.reelContainer, { height: itemHeight }]}>
       <Pressable onPress={toggleMute} style={StyleSheet.absoluteFill}>
@@ -196,40 +306,33 @@ const ReelItem = ({ item, isActive, itemHeight }: { item: ReelData; isActive: bo
         />
       </Pressable>
 
-      {/* OVERLAYS FOR NATIVE INSTAGRAM FEEL */}
+      {/* Basic Overlays */}
       <View style={styles.bottomOverlay}>
-        <View style={styles.userInfo}>
-           <View style={styles.avatarPlaceholder} />
-           <Text style={styles.usernameText}>@offline_user</Text>
-           <View style={styles.followButton}>
-              <Text style={styles.followText}>Follow</Text>
-           </View>
-        </View>
         <Text style={styles.captionText} numberOfLines={2}>
-           Downloaded offline reel • {new Date(item.timestamp).toLocaleDateString()}
+           Downloaded: {new Date(item.timestamp).toLocaleDateString()}
         </Text>
-        <View style={styles.musicContainer}>
-           <Ionicons name="musical-note" size={14} color="white" />
-           <Text style={styles.musicText}>Original Audio</Text>
-        </View>
       </View>
 
       <View style={styles.rightActionsRow}>
-         <View style={styles.actionItem}>
-            <Ionicons name="heart-outline" size={32} color="white" />
-            <Text style={styles.actionText}>Like</Text>
-         </View>
-         <View style={styles.actionItem}>
-            <Ionicons name="chatbubble-outline" size={30} color="white" />
-            <Text style={styles.actionText}>0</Text>
-         </View>
-         <View style={styles.actionItem}>
-            <Ionicons name="paper-plane-outline" size={30} color="white" />
-            <Text style={styles.actionText}>Share</Text>
-         </View>
-         <View style={styles.actionItem}>
-            <Ionicons name="ellipsis-vertical" size={24} color="white" />
-         </View>
+         {/* Save in-app Button */}
+         <Pressable style={styles.actionItem} onPress={handleToggleSave}>
+            <Ionicons name={isSavedLocally ? "bookmark" : "bookmark-outline"} size={30} color={isSavedLocally ? "#FFD700" : "white"} />
+            <Text style={[styles.actionText, isSavedLocally && { color: "#FFD700" }]}>
+              {isSavedLocally ? 'Saved' : 'Save'}
+            </Text>
+         </Pressable>
+         
+         {/* Save to Phone Gallery Button */}
+         <Pressable style={styles.actionItem} onPress={handleSaveToGallery}>
+            <Ionicons name="download-outline" size={30} color="white" />
+            <Text style={styles.actionText}>Gallery</Text>
+         </Pressable>
+         
+         {/* Delete Button */}
+         <Pressable style={styles.actionItem} onPress={handleDelete}>
+            <Ionicons name="trash-outline" size={30} color="#ff4444" />
+            <Text style={[styles.actionText, { color: '#ff4444' }]}>Delete</Text>
+         </Pressable>
       </View>
     </View>
   );
@@ -312,30 +415,26 @@ const styles = StyleSheet.create({
   captionText: {
     color: 'white',
     fontSize: 14,
-    marginBottom: 12,
-  },
-  musicContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  musicText: {
-    color: 'white',
-    fontSize: 13,
-    marginLeft: 6,
+    marginBottom: 4,
   },
   rightActionsRow: {
     position: 'absolute',
     bottom: 30,
-    right: 10,
+    right: 15,
     alignItems: 'center',
   },
   actionItem: {
     alignItems: 'center',
-    marginBottom: 18,
+    marginBottom: 20,
   },
   actionText: {
     color: 'white',
     fontSize: 12,
-    marginTop: 4,
+    marginTop: 6,
+  },
+  deletedText: {
+    color: '#888',
+    fontSize: 14,
+    marginTop: 15,
   },
 });

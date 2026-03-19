@@ -1,35 +1,52 @@
-import { Tabs } from 'expo-router';
+import { Stack } from 'expo-router';
 import React from 'react';
-
-import { HapticTab } from '@/components/haptic-tab';
-import { IconSymbol } from '@/components/ui/icon-symbol';
-import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 
 export default function TabLayout() {
   const colorScheme = useColorScheme();
 
   return (
-    <Tabs
-      screenOptions={{
-        tabBarActiveTintColor: Colors[colorScheme ?? 'light'].tint,
-        headerShown: false,
-        tabBarButton: HapticTab,
-      }}>
-      <Tabs.Screen
+    <Stack>
+      <Stack.Screen
         name="index"
         options={{
-          title: 'Insta Web',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="globe" color={color} />,
+          headerShown: false,
         }}
       />
-      <Tabs.Screen
+      <Stack.Screen
+        name="insta"
+        options={{
+          title: 'Instagram Web',
+          headerBackTitle: 'Home',
+        }}
+      />
+      <Stack.Screen
         name="explore"
         options={{
           title: 'Offline Reels',
-          tabBarIcon: ({ color }) => <IconSymbol size={28} name="film.fill" color={color} />,
+          headerBackTitle: 'Home',
+          headerStyle: { backgroundColor: 'black' },
+          headerTintColor: 'white',
         }}
       />
-    </Tabs>
+      <Stack.Screen
+        name="saved"
+        options={{
+          title: 'Saved Reels',
+          headerBackTitle: 'Home',
+          headerStyle: { backgroundColor: 'black' },
+          headerTintColor: 'white',
+        }}
+      />
+      <Stack.Screen
+        name="settings"
+        options={{
+          title: 'Settings',
+          headerBackTitle: 'Home',
+          headerStyle: { backgroundColor: '#111' },
+          headerTintColor: 'white',
+        }}
+      />
+    </Stack>
   );
 }

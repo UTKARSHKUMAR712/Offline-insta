@@ -1,22 +1,22 @@
-import { documentDirectory, createDownloadResumable } from 'expo-file-system/legacy';
+import { documentDirectory, createDownloadResumable, deleteAsync, getInfoAsync } from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 class SimpleEventEmitter {
-  events: { [key: string]: Function[] } = {};
+  private listeners: { [key: string]: Function[] } = {};
 
   on(event: string, listener: Function) {
-    if (!this.events[event]) this.events[event] = [];
-    this.events[event].push(listener);
+    if (!this.listeners[event]) this.listeners[event] = [];
+    this.listeners[event].push(listener);
   }
 
   off(event: string, listener: Function) {
-    if (!this.events[event]) return;
-    this.events[event] = this.events[event].filter(l => l !== listener);
+    if (!this.listeners[event]) return;
+    this.listeners[event] = this.listeners[event].filter(l => l !== listener);
   }
 
   emit(event: string, data?: any) {
-    if (!this.events[event]) return;
-    this.events[event].forEach(listener => listener(data));
+    if (!this.listeners[event]) return;
+    this.listeners[event].forEach(listener => listener(data));
   }
 }
 
@@ -25,9 +25,11 @@ export interface ReelData {
   localUri: string; // The local file path on the device
   originalUrl: string; // The original instagram URL
   timestamp: number;
+  isSaved?: boolean; // If true, it appears in "Saved Reels" tab, else "Offline Reels" and can be auto-deleted
 }
 
 const STORAGE_KEY = '@downloaded_reels';
+export const SETTINGS_AUTO_DELETE_KEY = '@settings_auto_delete_reels';
 // Change this to your actual Vercel deployment URL
 const API_URL = 'https://reeldownloder.vercel.app/api/video'; 
 
@@ -35,10 +37,12 @@ const API_URL = 'https://reeldownloder.vercel.app/api/video';
 export const DownloadEvents = new SimpleEventEmitter();
 
 export class DownloadService {
+  private static activeDownloads = new Set<string>();
+
   /**
    * Helper to broadcast log messages to the UI
    */
-  static log(message: string) {
+  private static log(message: string) {
     console.log(message);
     DownloadEvents.emit('log', message);
   }
@@ -71,7 +75,21 @@ export class DownloadService {
   static async getDownloadedReels(): Promise<ReelData[]> {
     try {
       const stored = await AsyncStorage.getItem(STORAGE_KEY);
-      return stored ? JSON.parse(stored) : [];
+      if (!stored) return [];
+      const parsed = JSON.parse(stored) as ReelData[];
+      
+      // Filter out any stale duplicates from legacy race condition bugs.
+      // We manually construct the Map to guarantee that if there is a duplicate where `isSaved === true`, 
+      // it takes absolute precedence over the un-saved clone.
+      const uniqueReelsMap = new Map<string, ReelData>();
+      parsed.forEach(item => {
+        const existing = uniqueReelsMap.get(item.id);
+        if (!existing || (item.isSaved && !existing.isSaved)) {
+          uniqueReelsMap.set(item.id, item);
+        }
+      });
+      const uniqueReels = Array.from(uniqueReelsMap.values());
+      return uniqueReels;
     } catch (e) {
       console.error('Failed to load reels from storage', e);
       return [];
@@ -100,36 +118,40 @@ export class DownloadService {
       return null;
     }
 
+    if (this.activeDownloads.has(postId)) {
+      return null;
+    }
+    
     if (await this.isReelDownloaded(postId)) {
       this.log(`Reel ${postId} is already downloaded.`);
       return null;
     }
 
-    this.log(`Starting process for ID: ${postId}`);
+    this.activeDownloads.add(postId);
 
-    // 2. Fetch the actual mp4 video URL from our Vercel API
-    const videoInfo = await this.fetchVideoInfo(postUrl);
-    
-    // Log exactly what the API gave us to the Android screen
-    this.log(`API Response: ${JSON.stringify(videoInfo).substring(0, 100)}...`);
-
-    // The API responds with: { "status": "success", "data": { "videoUrl": "..." } }
-    let videoUrl = videoInfo?.data?.videoUrl; 
-
-    if (!videoUrl) {
-      this.log(`NO VIDEO URL FOUND inside API JSON payload.`);
-      return null;
-    }
-
-    // 3. Download the actual file to the device
-    const docDir = documentDirectory;
-    if (!docDir) {
-      this.log(`Error: File system document directory is missing.`);
-      return null;
-    }
-    const localFileUri = `${docDir}reel_${postId}.mp4`;
-    
     try {
+      this.log(`Starting process for ID: ${postId}`);
+      const videoInfo = await this.fetchVideoInfo(postUrl);
+    
+      // Log exactly what the API gave us to the Android screen
+      this.log(`API Response: ${JSON.stringify(videoInfo).substring(0, 100)}...`);
+
+      // The API responds with: { "status": "success", "data": { "videoUrl": "..." } }
+      let videoUrl = videoInfo?.data?.videoUrl; 
+
+      if (!videoUrl) {
+        this.log(`NO VIDEO URL FOUND inside API JSON payload.`);
+        return null;
+      }
+
+      // 3. Download the actual file to the device
+      const docDir = documentDirectory;
+      if (!docDir) {
+        this.log(`Error: File system document directory is missing.`);
+        return null;
+      }
+      const localFileUri = `${docDir}reel_${postId}.mp4`;
+      
       this.log(`Starting MP4 download...`);
       
       // Use createDownloadResumable to track progress %
@@ -171,6 +193,95 @@ export class DownloadService {
     } catch (e: any) {
       this.log(`Download Error: ${e.message}`);
       return null;
+    } finally {
+      this.activeDownloads.delete(postId);
     }
   }
-}
+
+  /**
+   * Hard delete a reel from local filesystem and storage
+   */
+  static async deleteReel(postId: string) {
+    try {
+      this.log(`Attempting to delete reel: ${postId}`);
+      let reels = await this.getDownloadedReels();
+      const reelToDelete = reels.find(r => r.id === postId);
+      
+      if (!reelToDelete) {
+        this.log(`Reel ${postId} not found in storage.`);
+        return false;
+      }
+
+      // ULTIMATE SAFETY OVERRIDE: 
+      // Do not allow deletion if the latest database record shows this reel is explicitly saved 
+      // (Even if the frontend UI asked us to delete it due to state desync)
+      if (reelToDelete.isSaved) {
+        this.log(`ATTEMPTED DELETION BLOCKED: Reel ${postId} is marked as explicitly saved.`);
+        return false;
+      }
+
+      // Hard delete from file system
+      const fileInfo = await getInfoAsync(reelToDelete.localUri);
+      if (fileInfo.exists) {
+        await deleteAsync(reelToDelete.localUri);
+        this.log(`Deleted MP4 file from device.`);
+      }
+
+      // Remove from AsyncStorage
+      reels = reels.filter(r => r.id !== postId);
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(reels));
+      
+      this.log(`Reel ${postId} fully deleted from app.`);
+      DownloadEvents.emit('delete', postId);
+      return true;
+    } catch (e: any) {
+      this.log(`Failed to delete reel: ${e.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Toggle a reel's 'isSaved' state to prevent auto-deletion
+   */
+  static async toggleSaveReel(postId: string) {
+    try {
+      let reels = await this.getDownloadedReels();
+      let updatedReel: ReelData | null = null;
+      reels = reels.map(r => {
+        if (r.id === postId) {
+          updatedReel = { ...r, isSaved: !r.isSaved };
+          return updatedReel;
+        }
+        return r;
+      });
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(reels));
+      if (updatedReel) {
+        DownloadEvents.emit('save', updatedReel);
+      }
+      return updatedReel;
+    } catch (e) {
+      console.error('Failed to toggle save state', e);
+      return null;
+    }
+  }
+
+  /**
+   * Auto-delete setting config
+   */
+  static async getAutoDeleteEnabled(): Promise<boolean> {
+    try {
+      const val = await AsyncStorage.getItem(SETTINGS_AUTO_DELETE_KEY);
+      return val === 'true'; // Default false
+    } catch {
+      return false;
+    }
+  }
+
+  static async setAutoDeleteEnabled(enabled: boolean) {
+    try {
+      await AsyncStorage.setItem(SETTINGS_AUTO_DELETE_KEY, enabled ? 'true' : 'false');
+    } catch (e) {
+      console.error('Failed to save setting', e);
+    }
+  }
+} // End 
