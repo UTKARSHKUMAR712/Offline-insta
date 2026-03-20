@@ -9,7 +9,7 @@ export default function HomeScreen() {
     <SafeAreaView style={styles.container}>
       <View style={styles.content}>
         <View style={styles.buttonContainer}>
-          <TouchableOpacity 
+          <TouchableOpacity
             style={styles.button}
             onPress={() => router.push('/insta')}
             activeOpacity={0.7}
@@ -17,23 +17,23 @@ export default function HomeScreen() {
             <Text style={styles.buttonText}>instarel{'\n'}downloader</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity 
+          <TouchableOpacity
             style={styles.button}
             onPress={() => router.push('/explore')}
             activeOpacity={0.7}
           >
             <Text style={styles.buttonText}>offline reels</Text>
           </TouchableOpacity>
-          
-          <TouchableOpacity 
+
+          <TouchableOpacity
             style={styles.button}
             onPress={() => router.push('/saved')}
             activeOpacity={0.7}
           >
             <Text style={styles.buttonText}>saved reels</Text>
           </TouchableOpacity>
-          
-          <TouchableOpacity 
+
+          <TouchableOpacity
             style={styles.button}
             onPress={() => router.push('/settings')}
             activeOpacity={0.7}
