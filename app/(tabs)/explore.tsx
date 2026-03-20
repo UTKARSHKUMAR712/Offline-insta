@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { StyleSheet, View, Text, FlatList, Dimensions, ViewToken, AppState, LayoutChangeEvent, Pressable, Alert } from 'react-native';
 import { Video, ResizeMode, AVPlaybackStatus } from 'expo-av';
 import * as Sharing from 'expo-sharing';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { DownloadService, ReelData, DownloadEvents } from '../../services/download';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -12,6 +12,7 @@ const { height: windowHeight, width: windowWidth } = Dimensions.get('window');
 const LAST_VIEWED_INDEX_KEY = '@last_viewed_reel_index';
 
 export default function OfflineReelsFeed() {
+  const router = useRouter();
   const [reels, setReels] = useState<ReelData[]>([]);
   const [loading, setLoading] = useState(true);
   const [itemHeight, setItemHeight] = useState(Dimensions.get('window').height - 80);
@@ -160,6 +161,10 @@ export default function OfflineReelsFeed() {
 
   return (
     <View style={styles.container} onLayout={onContainerLayout}>
+      {/* Floating back button — top left */}
+      <Pressable style={styles.backBtn} onPress={() => router.back()}>
+        <Ionicons name="chevron-back" size={24} color="white" />
+      </Pressable>
       <FlatList
         ref={flatListRef}
         data={reels}
@@ -300,9 +305,10 @@ const ReelItem = ({ item, isActive, itemHeight, onDelete }: { item: ReelData; is
           source={{ uri: item.localUri }}
           style={styles.video}
           resizeMode={ResizeMode.COVER}
-          isLooping // Loop identically to IG/TikTok
-          shouldPlay={isActive}
+          isLooping
+          shouldPlay={isActive && appState === 'active'}
           isMuted={isMuted}
+          useNativeControls={false}
         />
       </Pressable>
 
@@ -436,5 +442,17 @@ const styles = StyleSheet.create({
     color: '#888',
     fontSize: 14,
     marginTop: 15,
+  },
+  backBtn: {
+    position: 'absolute',
+    top: 50,
+    left: 12,
+    zIndex: 50,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 });

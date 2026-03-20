@@ -1,13 +1,14 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { StyleSheet, View, Text, FlatList, Dimensions, ViewToken, AppState, LayoutChangeEvent, Pressable, Alert } from 'react-native';
 import { Video, ResizeMode } from 'expo-av';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { DownloadService, ReelData } from '../../services/download';
 
 const { width: windowWidth } = Dimensions.get('window');
 
 export default function SavedReelsFeed() {
+  const router = useRouter();
   const [reels, setReels] = useState<ReelData[]>([]);
   const [loading, setLoading] = useState(true);
   const [itemHeight, setItemHeight] = useState(Dimensions.get('window').height - 80);
@@ -73,6 +74,9 @@ export default function SavedReelsFeed() {
 
   return (
     <View style={styles.container} onLayout={onContainerLayout}>
+      <Pressable style={styles.backBtn} onPress={() => router.back()}>
+        <Ionicons name="chevron-back" size={24} color="white" />
+      </Pressable>
       <FlatList
         ref={flatListRef}
         data={reels}
@@ -155,8 +159,9 @@ const SavedReelItem = ({ item, isActive, itemHeight, onDelete }: { item: ReelDat
           style={styles.video}
           resizeMode={ResizeMode.COVER}
           isLooping
-          shouldPlay={isActive}
+          shouldPlay={isActive && appState === 'active'}
           isMuted={isMuted}
+          useNativeControls={false}
         />
       </Pressable>
 
@@ -195,4 +200,10 @@ const styles = StyleSheet.create({
   rightActionsRow: { position: 'absolute', bottom: 30, right: 15, alignItems: 'center' },
   actionItem: { alignItems: 'center', marginBottom: 20 },
   actionText: { color: 'white', fontSize: 12, marginTop: 6 },
+  backBtn: {
+    position: 'absolute', top: 50, left: 12, zIndex: 50,
+    width: 36, height: 36, borderRadius: 18,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center', alignItems: 'center',
+  },
 });

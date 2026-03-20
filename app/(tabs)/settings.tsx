@@ -1,29 +1,40 @@
 import React, { useState, useEffect } from 'react';
 import { StyleSheet, View, Text, Switch, SafeAreaView, ActivityIndicator, Pressable, Alert } from 'react-native';
 import { WebView } from 'react-native-webview';
+import { useRouter } from 'expo-router';
 import { DownloadService } from '../../services/download';
+import { Ionicons } from '@expo/vector-icons';
 
 // A small hidden WebView that we clear to log out Instagram.
 // We only show it briefly, then navigate back.
 let logoutWebViewRef: any = null;
 
 export default function SettingsScreen() {
+  const router = useRouter();
   const [autoDelete, setAutoDelete] = useState(false);
+  const [pauseDownloads, setPauseDownloads] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showLogoutView, setShowLogoutView] = useState(false);
 
   useEffect(() => {
     const loadSettings = async () => {
-      const enabled = await DownloadService.getAutoDeleteEnabled();
-      setAutoDelete(enabled);
+      const adEnabled = await DownloadService.getAutoDeleteEnabled();
+      const pdEnabled = await DownloadService.getDownloadsPaused();
+      setAutoDelete(adEnabled);
+      setPauseDownloads(pdEnabled);
       setLoading(false);
     };
     loadSettings();
   }, []);
 
-  const toggleSwitch = async (value: boolean) => {
+  const toggleAutoDelete = async (value: boolean) => {
     setAutoDelete(value);
     await DownloadService.setAutoDeleteEnabled(value);
+  };
+
+  const togglePauseDownloads = async (value: boolean) => {
+    setPauseDownloads(value);
+    await DownloadService.setDownloadsPaused(value);
   };
 
   const handleLogout = () => {
@@ -51,6 +62,11 @@ export default function SettingsScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
+      {/* Back Button */}
+      <Pressable style={styles.backBtn} onPress={() => router.back()}>
+        <Ionicons name="chevron-back" size={22} color="white" />
+        <Text style={styles.backText}>Home</Text>
+      </Pressable>
       {/* Auto-Delete Setting */}
       <View style={styles.settingRow}>
         <View style={styles.textContainer}>
@@ -63,8 +79,25 @@ export default function SettingsScreen() {
           trackColor={{ false: '#3e3e3e', true: '#FFD700' }}
           thumbColor="#f4f3f4"
           ios_backgroundColor="#3e3e3e"
-          onValueChange={toggleSwitch}
+          onValueChange={toggleAutoDelete}
           value={autoDelete}
+        />
+      </View>
+
+      {/* Pause Downloads Setting */}
+      <View style={styles.settingRow}>
+        <View style={styles.textContainer}>
+          <Text style={styles.title}>Pause Automatic Downloads</Text>
+          <Text style={styles.description}>
+            When enabled, the app will stop automatically fetching and downloading reels from Instagram pages.
+          </Text>
+        </View>
+        <Switch
+          trackColor={{ false: '#3e3e3e', true: '#FFD700' }}
+          thumbColor="#f4f3f4"
+          ios_backgroundColor="#3e3e3e"
+          onValueChange={togglePauseDownloads}
+          value={pauseDownloads}
         />
       </View>
 
@@ -152,5 +185,16 @@ const styles = StyleSheet.create({
     color: '#aaa',
     fontSize: 13,
     lineHeight: 18,
+  },
+  backBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+    paddingVertical: 8,
+  },
+  backText: {
+    color: 'white',
+    fontSize: 16,
+    marginLeft: 4,
   },
 });
