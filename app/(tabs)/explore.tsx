@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { StyleSheet, View, Text, FlatList, Dimensions, ViewToken, AppState, LayoutChangeEvent, Pressable, Alert } from 'react-native';
-import { Video, ResizeMode, AVPlaybackStatus } from 'expo-av';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import * as Sharing from 'expo-sharing';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -194,95 +194,77 @@ export default function OfflineReelsFeed() {
   );
 }
 
-// ---------------------------------------------------------------------------------
-// Sub-component for individual Reels
-// ---------------------------------------------------------------------------------
+// ── expo-video based ReelItem ──────────────────────────────────────────────
 const ReelItem = ({ item, isActive, itemHeight, onDelete }: { item: ReelData; isActive: boolean; itemHeight: number; onDelete: (id: string) => void }) => {
-  const videoRef = useRef<Video>(null);
   const [isSavedLocally, setIsSavedLocally] = useState<boolean>(item.isSaved || false);
   const [isDeleted, setIsDeleted] = useState(false);
-  
-  // Manage Video play state globally using AppState and isFocused
-  const [appState, setAppState] = useState(AppState.currentState);
-
-  useEffect(() => {
-    // If user backgrounds the app, pause the video.
-    const subscription = AppState.addEventListener('change', nextAppState => {
-      setAppState(nextAppState);
-    });
-    
-    // Listen for background auto-deletions to update this specific component
-    const handleDeleted = (deletedId: string) => {
-      if (deletedId === item.id) {
-        setIsDeleted(true);
-      }
-    };
-    DownloadEvents.on('delete', handleDeleted);
-    
-    return () => {
-      subscription.remove();
-      DownloadEvents.off('delete', handleDeleted);
-    };
-  }, [item.id]);
-
   const [isMuted, setIsMuted] = useState(false);
 
-  useEffect(() => {
-    if (isActive && appState === 'active') {
-      videoRef.current?.playAsync();
-    } else {
-      videoRef.current?.pauseAsync();
-      videoRef.current?.setPositionAsync(0); // Reset reel to start when scrolled away
-    }
-  }, [isActive, appState]);
+  // expo-video player — created once per item
+  const player = useVideoPlayer(item.localUri, p => {
+    p.loop = true;
+    p.muted = false;
+    p.volume = 1;
+  });
 
-  const toggleMute = () => {
-    setIsMuted(!isMuted);
-  };
+  // Play/pause when visibility changes
+  useEffect(() => {
+    if (isActive) {
+      player.play();
+    } else {
+      player.pause();
+      player.currentTime = 0;
+    }
+  }, [isActive, player]);
+
+  // Handle app backgrounding
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', state => {
+      if (state === 'active' && isActive) player.play();
+      else player.pause();
+    });
+    return () => sub.remove();
+  }, [isActive, player]);
+
+  // Mute toggle
+  useEffect(() => {
+    player.muted = isMuted;
+  }, [isMuted, player]);
+
+  // Listen for auto-delete events
+  useEffect(() => {
+    const handleDeleted = (deletedId: string) => {
+      if (deletedId === item.id) setIsDeleted(true);
+    };
+    DownloadEvents.on('delete', handleDeleted);
+    return () => DownloadEvents.off('delete', handleDeleted);
+  }, [item.id]);
 
   const handleToggleSave = async () => {
     const updated: any = await DownloadService.toggleSaveReel(item.id);
-    if (updated) {
-      setIsSavedLocally(updated.isSaved || false);
-    }
+    if (updated) setIsSavedLocally(updated.isSaved || false);
   };
 
   const handleDelete = () => {
-    Alert.alert(
-      "Delete Reel",
-      "Are you sure you want to completely delete this reel from your device?",
-      [
-        { text: "Cancel", style: "cancel" },
-        { 
-          text: "Delete", 
-          style: "destructive",
-          onPress: async () => {
-            const success = await DownloadService.deleteReel(item.id);
-            if (success) {
-               onDelete(item.id);
-            } else {
-               Alert.alert("Error", "Failed to delete reel.");
-            }
-          }
-        }
-      ]
-    );
+    Alert.alert('Delete Reel', 'Are you sure you want to delete this reel?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          const ok = await DownloadService.deleteReel(item.id);
+          if (ok) onDelete(item.id);
+          else Alert.alert('Error', 'Failed to delete reel.');
+        },
+      },
+    ]);
   };
 
   const handleSaveToGallery = async () => {
     try {
       const isAvailable = await Sharing.isAvailableAsync();
-      if (!isAvailable) {
-        Alert.alert('Not Available', 'Sharing is not available on this device.');
-        return;
-      }
-      // Opens the native Android share sheet — user can choose to save to gallery, send via WhatsApp, etc.
-      // Zero permissions needed.
-      await Sharing.shareAsync(item.localUri, {
-        mimeType: 'video/mp4',
-        dialogTitle: 'Save reel to gallery',
-        UTI: 'public.movie',
-      });
+      if (!isAvailable) { Alert.alert('Not Available', 'Sharing not available.'); return; }
+      await Sharing.shareAsync(item.localUri, { mimeType: 'video/mp4', dialogTitle: 'Save to gallery', UTI: 'public.movie' });
     } catch (e: any) {
       Alert.alert('Error', 'Could not share: ' + e.message);
     }
@@ -298,49 +280,41 @@ const ReelItem = ({ item, isActive, itemHeight, onDelete }: { item: ReelData; is
   }
 
   return (
-    <View style={[styles.reelContainer, { height: itemHeight }]}>
-      <Pressable onPress={toggleMute} style={StyleSheet.absoluteFill}>
-        <Video
-          ref={videoRef}
-          source={{ uri: item.localUri }}
-          style={styles.video}
-          resizeMode={ResizeMode.COVER}
-          isLooping
-          shouldPlay={isActive && appState === 'active'}
-          isMuted={isMuted}
-          useNativeControls={false}
-        />
-      </Pressable>
+    <Pressable style={[styles.reelContainer, { height: itemHeight }]} onPress={() => setIsMuted(m => !m)}>
+      <VideoView
+        player={player}
+        style={StyleSheet.absoluteFill}
+        contentFit="cover"
+        nativeControls={false}
+      />
 
-      {/* Basic Overlays */}
+      {isMuted && (
+        <View style={styles.muteIndicator}>
+          <Ionicons name="volume-mute" size={28} color="rgba(255,255,255,0.8)" />
+        </View>
+      )}
+
       <View style={styles.bottomOverlay}>
         <Text style={styles.captionText} numberOfLines={2}>
-           Downloaded: {new Date(item.timestamp).toLocaleDateString()}
+          Downloaded: {new Date(item.timestamp).toLocaleDateString()}
         </Text>
       </View>
 
       <View style={styles.rightActionsRow}>
-         {/* Save in-app Button */}
-         <Pressable style={styles.actionItem} onPress={handleToggleSave}>
-            <Ionicons name={isSavedLocally ? "bookmark" : "bookmark-outline"} size={30} color={isSavedLocally ? "#FFD700" : "white"} />
-            <Text style={[styles.actionText, isSavedLocally && { color: "#FFD700" }]}>
-              {isSavedLocally ? 'Saved' : 'Save'}
-            </Text>
-         </Pressable>
-         
-         {/* Save to Phone Gallery Button */}
-         <Pressable style={styles.actionItem} onPress={handleSaveToGallery}>
-            <Ionicons name="download-outline" size={30} color="white" />
-            <Text style={styles.actionText}>Gallery</Text>
-         </Pressable>
-         
-         {/* Delete Button */}
-         <Pressable style={styles.actionItem} onPress={handleDelete}>
-            <Ionicons name="trash-outline" size={30} color="#ff4444" />
-            <Text style={[styles.actionText, { color: '#ff4444' }]}>Delete</Text>
-         </Pressable>
+        <Pressable style={styles.actionItem} onPress={handleToggleSave}>
+          <Ionicons name={isSavedLocally ? 'bookmark' : 'bookmark-outline'} size={30} color={isSavedLocally ? '#FFD700' : 'white'} />
+          <Text style={[styles.actionText, isSavedLocally && { color: '#FFD700' }]}>{isSavedLocally ? 'Saved' : 'Save'}</Text>
+        </Pressable>
+        <Pressable style={styles.actionItem} onPress={handleSaveToGallery}>
+          <Ionicons name="download-outline" size={30} color="white" />
+          <Text style={styles.actionText}>Gallery</Text>
+        </Pressable>
+        <Pressable style={styles.actionItem} onPress={handleDelete}>
+          <Ionicons name="trash-outline" size={30} color="#ff4444" />
+          <Text style={[styles.actionText, { color: '#ff4444' }]}>Delete</Text>
+        </Pressable>
       </View>
-    </View>
+    </Pressable>
   );
 };
 
@@ -373,11 +347,16 @@ const styles = StyleSheet.create({
     backgroundColor: 'black',
     justifyContent: 'center',
     alignItems: 'center',
-    // Removed strict height binding here to pass inline from component
+    overflow: 'hidden',
   },
-  video: {
-    width: '100%',
-    height: '100%',
+  muteIndicator: {
+    position: 'absolute',
+    top: '45%',
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderRadius: 30,
+    padding: 10,
+    zIndex: 10,
   },
   bottomOverlay: {
     position: 'absolute',
