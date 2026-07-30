@@ -4,12 +4,10 @@ import { useState, useRef, useEffect } from 'react';
 import { DownloadService, DownloadEvents } from '../../services/download';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
+import { DownloadProgressOverlay } from '../../components/DownloadProgressOverlay';
 
 export default function HomeScreen() {
   const webViewRef = useRef<WebView>(null);
-
-  const [logs, setLogs] = useState<string[]>(['Ready to download']);
-  const [progressFiles, setProgressFiles] = useState<{ [key: string]: number }>({});
 
   // Track the URL currently open in the WebView
   const [currentUrl, setCurrentUrl] = useState('');
@@ -18,32 +16,6 @@ export default function HomeScreen() {
   const [modalVisible, setModalVisible] = useState(false);
   const [inputUrl, setInputUrl] = useState('');
   const [isDownloading, setIsDownloading] = useState(false);
-
-  useEffect(() => {
-    const handleLog = (msg: string) => {
-      setLogs((prev) => [...prev, msg].slice(-5));
-    };
-    const handleProgress = ({ postId, percentage }: { postId: string; percentage: number }) => {
-      setProgressFiles((prev) => ({ ...prev, [postId]: percentage }));
-      if (percentage === 100) {
-        setTimeout(() => {
-          setProgressFiles((prev) => {
-            const copy = { ...prev };
-            delete copy[postId];
-            return copy;
-          });
-        }, 3000);
-      }
-    };
-
-    DownloadEvents.on('log', handleLog);
-    DownloadEvents.on('progress', handleProgress);
-
-    return () => {
-      DownloadEvents.off('log', handleLog);
-      DownloadEvents.off('progress', handleProgress);
-    };
-  }, []);
 
   // onNavigationStateChange: fires on full page navigations only
   const onNavigationStateChange = async (navState: any) => {
@@ -126,8 +98,6 @@ export default function HomeScreen() {
     setIsDownloading(false);
   };
 
-  const activeDownloads = Object.entries(progressFiles);
-
   return (
     <View style={styles.container}>
       <WebView
@@ -142,20 +112,7 @@ export default function HomeScreen() {
         mediaPlaybackRequiresUserAction={false}
       />
 
-      {/* Overlay UI — pointer-events none for status, so it never blocks the web view */}
-      <View style={styles.overlay} pointerEvents="none">
-        {activeDownloads.map(([postId, percent]) => (
-          <View key={postId} style={styles.progressContainer}>
-            <Text style={styles.progressText}>Downloading {postId.slice(0, 10)}...: {percent}%</Text>
-            <View style={styles.progressBarBg}>
-              <View style={[styles.progressBarFill, { width: `${percent}%` }]} />
-            </View>
-          </View>
-        ))}
-        {logs.slice(-2).map((logStr, index) => (
-          <Text key={index} style={styles.logText}>{logStr}</Text>
-        ))}
-      </View>
+      <DownloadProgressOverlay />
 
       {/* Floating download button — left side, semi-transparent */}
       <Pressable
@@ -212,46 +169,6 @@ export default function HomeScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-
-  overlay: {
-    position: 'absolute',
-    bottom: 100,
-    left: 10,
-    right: 10,
-    zIndex: 10,
-    gap: 6,
-    alignItems: 'flex-start',
-  },
-  progressContainer: {
-    backgroundColor: 'rgba(0,0,0,0.8)',
-    padding: 8,
-    borderRadius: 8,
-    width: '100%',
-  },
-  progressText: {
-    color: 'white',
-    fontSize: 12,
-    marginBottom: 4,
-  },
-  progressBarBg: {
-    height: 3,
-    backgroundColor: '#333',
-    borderRadius: 2,
-    overflow: 'hidden',
-  },
-  progressBarFill: {
-    height: '100%',
-    backgroundColor: '#007AFF',
-  },
-  logText: {
-    color: 'rgba(0,255,0,0.7)',
-    fontSize: 10,
-    fontFamily: 'monospace',
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
 
   // Floating button — left side, semi-transparent
   floatingBtn: {

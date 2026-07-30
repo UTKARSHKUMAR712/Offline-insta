@@ -41,10 +41,13 @@ export class DownloadService {
   private static queue: string[] = [];
   private static queuedIds = new Set<string>();
   private static isProcessing = false;
+  private static reelsCache: ReelData[] | null = null;
 
   // ── Logging ──
   private static log(msg: string) {
-    console.log(msg);
+    if (__DEV__) {
+      console.log(msg);
+    }
     DownloadEvents.emit('log', msg);
   }
 
@@ -121,7 +124,9 @@ export class DownloadService {
 
       const reel: ReelData = { id: postId, localUri: result.uri, originalUrl: postUrl, timestamp: Date.now() };
       const existing = await this.getDownloadedReels();
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify([reel, ...existing]));
+      const updatedList = [reel, ...existing];
+      this.reelsCache = updatedList;
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(updatedList));
 
       this.log(`✅ Done: ${postId}`);
       DownloadEvents.emit('progress', { postId, percentage: 100 });
@@ -148,9 +153,14 @@ export class DownloadService {
 
   // ── Storage helpers ──
   static async getDownloadedReels(): Promise<ReelData[]> {
+    if (this.reelsCache !== null) return this.reelsCache;
+
     try {
       const stored = await AsyncStorage.getItem(STORAGE_KEY);
-      if (!stored) return [];
+      if (!stored) {
+        this.reelsCache = [];
+        return [];
+      }
       const parsed = JSON.parse(stored) as ReelData[];
       // Dedup: if two items share an ID, keep the one with isSaved=true
       const map = new Map<string, ReelData>();
@@ -158,7 +168,8 @@ export class DownloadService {
         const existing = map.get(item.id);
         if (!existing || (item.isSaved && !existing.isSaved)) map.set(item.id, item);
       });
-      return Array.from(map.values());
+      this.reelsCache = Array.from(map.values());
+      return this.reelsCache;
     } catch { return []; }
   }
 
@@ -181,6 +192,7 @@ export class DownloadService {
       if (info.exists) await deleteAsync(reel.localUri);
 
       reels = reels.filter(r => r.id !== postId);
+      this.reelsCache = reels;
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(reels));
 
       this.log(`Deleted: ${postId}`);
@@ -201,6 +213,7 @@ export class DownloadService {
         if (r.id === postId) { updated = { ...r, isSaved: !r.isSaved }; return updated; }
         return r;
       });
+      this.reelsCache = reels;
       await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(reels));
       if (updated) DownloadEvents.emit('toggleSave', { id: postId, isSaved: (updated as ReelData).isSaved });
       return updated;

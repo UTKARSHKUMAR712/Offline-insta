@@ -81,6 +81,10 @@ export default function SavedReelsFeed() {
         showsVerticalScrollIndicator={false}
         onViewableItemsChanged={onViewableItemsChanged}
         viewabilityConfig={viewabilityConfig}
+        windowSize={3}
+        initialNumToRender={2}
+        maxToRenderPerBatch={1}
+        removeClippedSubviews={true}
         getItemLayout={(_, index) => ({ length: itemHeight, offset: itemHeight * index, index })}
       />
     </View>
@@ -88,7 +92,7 @@ export default function SavedReelsFeed() {
 }
 
 // ── expo-video based SavedReelItem ───────────────────────────────────────────
-const SavedReelItem = ({ item, isActive, itemHeight, onDelete }: {
+const SavedReelItem = React.memo(({ item, isActive, itemHeight, onDelete }: {
   item: ReelData; isActive: boolean; itemHeight: number; onDelete: (id: string) => void;
 }) => {
   const [isMuted, setIsMuted] = useState(false);
@@ -160,7 +164,7 @@ const SavedReelItem = ({ item, isActive, itemHeight, onDelete }: {
       </View>
     </Pressable>
   );
-};
+});
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: 'black' },

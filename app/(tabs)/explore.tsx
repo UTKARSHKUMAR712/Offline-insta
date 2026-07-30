@@ -183,6 +183,10 @@ export default function OfflineReelsFeed() {
         showsVerticalScrollIndicator={false}
         onViewableItemsChanged={onViewableItemsChanged}
         viewabilityConfig={viewabilityConfig}
+        windowSize={3}
+        initialNumToRender={2}
+        maxToRenderPerBatch={1}
+        removeClippedSubviews={true}
         getItemLayout={(data, index) => ({
           length: itemHeight,
           offset: itemHeight * index,
@@ -195,7 +199,7 @@ export default function OfflineReelsFeed() {
 }
 
 // ── expo-video based ReelItem ──────────────────────────────────────────────
-const ReelItem = ({ item, isActive, itemHeight, onDelete }: { item: ReelData; isActive: boolean; itemHeight: number; onDelete: (id: string) => void }) => {
+const ReelItem = React.memo(({ item, isActive, itemHeight, onDelete }: { item: ReelData; isActive: boolean; itemHeight: number; onDelete: (id: string) => void }) => {
   const [isSavedLocally, setIsSavedLocally] = useState<boolean>(item.isSaved || false);
   const [isDeleted, setIsDeleted] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
@@ -316,7 +320,7 @@ const ReelItem = ({ item, isActive, itemHeight, onDelete }: { item: ReelData; is
       </View>
     </Pressable>
   );
-};
+});
 
 
 const styles = StyleSheet.create({

@@ -2,8 +2,9 @@ import { StyleSheet, View, Text, TextInput, Pressable, KeyboardAvoidingView, Pla
 import { useState, useEffect } from 'react';
 import { DownloadService, DownloadEvents } from '../../services/download';
 import { useRouter } from 'expo-router';
-import { Video, ResizeMode } from 'expo-av';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import { ConfigManager } from '../../services/ConfigManager';
+import { DownloadProgressOverlay } from '../../components/DownloadProgressOverlay';
 
 export default function UrlDownloaderScreen() {
   const router = useRouter();
@@ -11,34 +12,15 @@ export default function UrlDownloaderScreen() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [isFetchingPreview, setIsFetchingPreview] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
-  const [logs, setLogs] = useState<string[]>(['Ready to download']);
-  const [progressFiles, setProgressFiles] = useState<{ [key: string]: number }>({});
 
-  useEffect(() => {
-    const handleLog = (msg: string) => {
-      setLogs((prev) => [...prev, msg].slice(-5));
-    };
-    const handleProgress = ({ postId, percentage }: { postId: string; percentage: number }) => {
-      setProgressFiles((prev) => ({ ...prev, [postId]: percentage }));
-      if (percentage === 100) {
-        setTimeout(() => {
-          setProgressFiles((prev) => {
-            const copy = { ...prev };
-            delete copy[postId];
-            return copy;
-          });
-        }, 3000);
-      }
-    };
-
-    DownloadEvents.on('log', handleLog);
-    DownloadEvents.on('progress', handleProgress);
-
-    return () => {
-      DownloadEvents.off('log', handleLog);
-      DownloadEvents.off('progress', handleProgress);
-    };
-  }, []);
+  // We initialize the player unconditionally, but with a null-ish source or replace it when previewUrl changes
+  const player = useVideoPlayer(previewUrl, p => {
+    if (p) {
+      p.loop = true;
+      p.muted = false;
+      p.play();
+    }
+  });
 
   const handlePreview = async () => {
     Keyboard.dismiss();
@@ -91,8 +73,6 @@ export default function UrlDownloaderScreen() {
     }
   };
 
-  const activeDownloads = Object.entries(progressFiles);
-
   return (
     <KeyboardAvoidingView 
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -133,13 +113,11 @@ export default function UrlDownloaderScreen() {
 
         {previewUrl && (
           <View style={styles.previewContainer}>
-            <Video
-              source={{ uri: previewUrl }}
+            <VideoView
+              player={player}
               style={styles.video}
-              useNativeControls
-              resizeMode={ResizeMode.CONTAIN}
-              isLooping
-              shouldPlay
+              contentFit="contain"
+              nativeControls
             />
             <Pressable 
               style={[styles.downloadBtn, { marginTop: 16, backgroundColor: '#28a745', width: '100%' }]} 
@@ -154,20 +132,8 @@ export default function UrlDownloaderScreen() {
         )}
       </View>
 
-      {/* Progress & Logs UI */}
-      <View style={styles.statusArea} pointerEvents="none">
-        {activeDownloads.map(([postId, percent]) => (
-          <View key={postId} style={styles.progressContainer}>
-            <Text style={styles.progressText}>Downloading {postId.slice(0, 10)}...: {percent}%</Text>
-            <View style={styles.progressBarBg}>
-              <View style={[styles.progressBarFill, { width: `${percent}%` }]} />
-            </View>
-          </View>
-        ))}
-        {logs.map((logStr, index) => (
-          <Text key={index} style={styles.logText}>{logStr}</Text>
-        ))}
-      </View>
+      {/* Extracted isolated overlay that handles its own re-renders on progress ticks */}
+      <DownloadProgressOverlay />
     </KeyboardAvoidingView>
   );
 }
@@ -244,44 +210,5 @@ const styles = StyleSheet.create({
     maxHeight: 400,
     backgroundColor: '#000',
     borderRadius: 12,
-  },
-  statusArea: {
-    position: 'absolute',
-    bottom: 40,
-    left: 20,
-    right: 20,
-    gap: 8,
-  },
-  progressContainer: {
-    backgroundColor: 'rgba(0,0,0,0.8)',
-    padding: 12,
-    borderRadius: 8,
-    width: '100%',
-    borderWidth: 1,
-    borderColor: '#333',
-  },
-  progressText: {
-    color: 'white',
-    fontSize: 13,
-    marginBottom: 8,
-  },
-  progressBarBg: {
-    height: 4,
-    backgroundColor: '#333',
-    borderRadius: 2,
-    overflow: 'hidden',
-  },
-  progressBarFill: {
-    height: '100%',
-    backgroundColor: '#007AFF',
-  },
-  logText: {
-    color: '#0f0',
-    fontSize: 11,
-    fontFamily: 'monospace',
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 4,
   },
 });
