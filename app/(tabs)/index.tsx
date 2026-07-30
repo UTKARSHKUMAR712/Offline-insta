@@ -19,6 +19,14 @@ export default function HomeScreen() {
 
           <TouchableOpacity
             style={styles.button}
+            onPress={() => router.push('/url-downloader')}
+            activeOpacity={0.7}
+          >
+            <Text style={styles.buttonText}>url reel downloader</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.button}
             onPress={() => router.push('/explore')}
             activeOpacity={0.7}
           >

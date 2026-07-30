@@ -6,6 +6,7 @@ export default function TabLayout() {
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="index" />
       <Stack.Screen name="insta" />
+      <Stack.Screen name="url-downloader" />
       <Stack.Screen name="explore" />
       <Stack.Screen name="saved" />
       <Stack.Screen name="settings" />

@@ -1,5 +1,6 @@
 import { documentDirectory, createDownloadResumable, deleteAsync, getInfoAsync } from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ConfigManager } from './ConfigManager';
 
 // ─── Simple Event Emitter ────────────────────────────────────────────────────
 class SimpleEventEmitter {
@@ -30,7 +31,6 @@ export interface ReelData {
 const STORAGE_KEY = '@downloaded_reels';
 export const SETTINGS_AUTO_DELETE_KEY = '@settings_auto_delete_reels';
 export const SETTINGS_PAUSE_DOWNLOADS_KEY = '@settings_pause_downloads';
-const API_URL = 'https://reeldownloder.vercel.app/api/video';
 
 export const DownloadEvents = new SimpleEventEmitter();
 
@@ -136,7 +136,8 @@ export class DownloadService {
   // ── Fetch video info from API ──
   static async fetchVideoInfo(postUrl: string) {
     try {
-      const response = await fetch(`${API_URL}?postUrl=${postUrl}`);
+      const apiUrl = await ConfigManager.getApiUrl();
+      const response = await fetch(`${apiUrl}?postUrl=${postUrl}`);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return await response.json();
     } catch (e: any) {
