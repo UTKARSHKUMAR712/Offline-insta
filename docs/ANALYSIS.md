@@ -22,6 +22,24 @@ Caption and thumbnail remain unset until the extractor returns them.
 SDK 58 note: `saveToLibraryAsync` now throws at runtime — use `MediaLibrary.Asset.create(uri)`
 after `requestPermissionsAsync()`.
 
+P2 status (items 13–17):
+
+- 13 — `services/` is split into `api`, `catalog`, `queue`, `events`, `types`, with
+  `download.ts` as the orchestrator. Jest (`jest-expo`) covers URL parsing, error mapping,
+  catalog dedupe/migration/stats and queue ordering/drop. `npm test` → 37 passing.
+- 14 — `typecheck` + `test` scripts added, CI workflow at `.github/workflows/ci.yml`,
+  dead template files and the unused `expo-image`/`expo-haptics`/`expo-web-browser`/
+  `expo-system-ui` dependencies removed.
+- 15 — endpoint is configurable via `EXPO_PUBLIC_API_URL` (default in `extra.apiUrl`), with a
+  candidate list and a 4 s health probe that skips 404/5xx endpoints. A versioned `/v1`
+  route and the 4xx contract are still server-side work; the client already maps both
+  envelopes and every documented error code. `app.config.ts` was tried and dropped: Expo
+  Doctor flags an app.json + dynamic config pair even when the values are identical.
+- 16 — the fake logout was removed. A real cookie clear needs the platform cookie store
+  (native module, development build), so the row no longer claims to have done it.
+- 17 — README rewritten with architecture, API contract, setup, release steps and the legal /
+  store-policy risk section.
+
 ---
 
 ## 1. What the project actually is

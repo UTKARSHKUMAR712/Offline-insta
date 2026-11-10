@@ -47,14 +47,14 @@
         }
       ],
       "expo-video",
-      "expo-font",
-      "expo-web-browser"
+      "expo-font"
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
     },
     "extra": {
+      "apiUrl": "https://api-insta-tawny.vercel.app/api/extract",
       "router": {},
       "eas": {
         "projectId": "e32984b9-bfb1-48cb-9988-6dd4eab7a541"
