@@ -27,6 +27,8 @@ export type AutoScrollResult = {
     title: string;
     captured: number;
     lastCode: string;
+    /** Every shortcode seen so far, oldest first: the feed order to save from. */
+    codes: string[];
   };
 };
 
@@ -105,14 +107,19 @@ export const AUTO_SCROLL_SCRIPT = `
   function scanResponse(text) {
     if (!text) return;
     if (text.indexOf('video_versions') === -1 && text.indexOf('clips_metadata') === -1) return;
-    var slice = text.slice(0, 3000000);
-    var pattern = /"code":"([A-Za-z0-9_-]{8,15})"/g;
-    var match;
-    while ((match = pattern.exec(slice))) {
-      var code = match[1];
-      if (captured.indexOf(code) === -1) {
-        captured.push(code);
-        if (captured.length > 50) captured.shift();
+    // Server-rendered payloads arrive double-escaped (\"code\":\"…\"), which a
+    // plain quote match would miss. Stripping backslashes is safe here: a
+    // shortcode is only letters, digits, - and _.
+    var slice = text.slice(0, 3000000).split(String.fromCharCode(92)).join('');
+    var patterns = [/"code":"([A-Za-z0-9_-]{8,15})"/g, /"shortcode":"([A-Za-z0-9_-]{8,15})"/g];
+    for (var p = 0; p < patterns.length; p++) {
+      var match;
+      while ((match = patterns[p].exec(slice))) {
+        var code = match[1];
+        if (captured.indexOf(code) === -1) {
+          captured.push(code);
+          if (captured.length > 50) captured.shift();
+        }
       }
     }
   }
@@ -248,11 +255,6 @@ export const AUTO_SCROLL_SCRIPT = `
     try {
       if (permalinkPath(location.pathname)) return location.origin + permalinkPath(location.pathname);
     } catch (e) {}
-    // Last resort: the newest reel shortcode Instagram fetched, which is the one
-    // it is about to or has just shown.
-    if (captured.length) {
-      return 'https://www.instagram.com/reel/' + captured[captured.length - 1] + '/';
-    }
     return '';
   }
 
@@ -283,7 +285,8 @@ export const AUTO_SCROLL_SCRIPT = `
       ogUrl: metaValue('meta[property="og:url"]'),
       title: document.title || '',
       captured: captured.length,
-      lastCode: captured.length ? captured[captured.length - 1] : ''
+      lastCode: captured.length ? captured[captured.length - 1] : '',
+      codes: captured.slice(-30)
     };
   }
 

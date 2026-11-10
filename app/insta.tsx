@@ -41,6 +41,9 @@ export default function HomeScreen() {
   const autoScrollStallsRef = useRef(0);
   // Shortcode of the reel the loop last saw, used to tell "advanced" from "stuck".
   const autoScrollLastShortcodeRef = useRef('');
+  // Reels already queued by the loop this run, so a stale page URL the page keeps
+  // reporting is not downloaded over and over.
+  const autoScrollQueuedRef = useRef<Set<string>>(new Set());
 
   // Re-read the setting on focus: it is toggled from the Settings tab.
   useFocusEffect(
@@ -149,39 +152,48 @@ export default function HomeScreen() {
       }
     };
     const diag = result.diag;
+    const codes = diag?.codes || [];
     logLine(
       `>> auto ${result.reason || 'step'} · reel ${result.index + 1}/${result.count} · href ${path(
         result.href
-      )} · postLinks ${diag ? diag.postLinks : '?'} · captured ${diag ? diag.captured : '?'} (${
-        diag ? diag.lastCode || '-' : '-'
-      }) · canon ${path(diag ? diag.canonical : '')} · og ${path(diag ? diag.ogUrl : '')} · page ${path(
+      )} · postLinks ${diag ? diag.postLinks : '?'} · captured ${diag ? diag.captured : '?'} · page ${path(
         result.url
-      )}`
+      )} · codes ${codes.length ? codes.join(',') : '-'}`
     );
 
     // An open comments panel is transient: the reel under it is not changing.
     if (result.reason === 'comments-open') return;
 
-    // Download from the reel link the page reported rather than waiting for a
-    // URL change, which a programmatic scroll does not reliably produce. The
-    // canonical/og:url metadata is the fallback when the card has no anchors.
-    const target =
+    // Name the reel to save. The card's own link is the most accurate source,
+    // but on layouts that render no anchors (postLinks 0) it degrades to the
+    // address bar, which a programmatic scroll never moves — so the shortcodes
+    // Instagram fetched for the feed, in feed order, are the reliable fallback.
+    const fromPage =
       parseInstagramUrl(result.href || '') ??
-      parseInstagramUrl(result.url || '') ??
       parseInstagramUrl(diag?.canonical || '') ??
       parseInstagramUrl(diag?.ogUrl || '');
+    const fromFeed = codes
+      .map(code => parseInstagramUrl(`https://www.instagram.com/reel/${code}/`))
+      .find(target => !!target && !autoScrollQueuedRef.current.has(target.shortcode));
+    const target =
+      fromPage && !autoScrollQueuedRef.current.has(fromPage.shortcode) ? fromPage : fromFeed;
+
     if (target) {
+      autoScrollQueuedRef.current.add(target.shortcode);
       void handleDetectedUrl(target.canonicalUrl);
       if (target.shortcode !== autoScrollLastShortcodeRef.current) {
         autoScrollLastShortcodeRef.current = target.shortcode;
         autoScrollStallsRef.current = 0;
-      } else {
-        autoScrollStallsRef.current += 1;
       }
     } else {
-      autoScrollStallsRef.current += 1;
+      logLine('>> auto: no new reel in the page data yet');
     }
 
+    // Only a step that could not advance the feed is a stall. A scroll that moved
+    // but had no new reel to name must keep going: the next one may have arrived.
+    if (result.ok) return;
+
+    autoScrollStallsRef.current += 1;
     if (autoScrollStallsRef.current < AUTO_SCROLL_MAX_STALLS) return;
 
     autoScrollStallsRef.current = 0;
@@ -201,6 +213,7 @@ export default function HomeScreen() {
 
       autoScrollStallsRef.current = 0;
       autoScrollLastShortcodeRef.current = '';
+      autoScrollQueuedRef.current = new Set();
 
       function schedule() {
         if (cancelled) return;
