@@ -110,11 +110,15 @@ the reel that is fully inside the viewport by geometry and calls `scrollIntoView
 [Auto-Reels-Scroller](https://github.com/Tyson3101/Auto-Reels-Scroller)); when only one reel is
 mounted it scrolls the nearest scrollable container by one viewport instead.
 
-Each step also reports the on-screen reel's permalink read from the DOM, and the app downloads
-from that link. Waiting for Instagram's address bar to change does not work here: a programmatic
-scroll moves the feed without reliably updating the URL, so the feed advanced while nothing was
-saved. React Native owns the clock, so a step is skipped while a download is in flight, an open
-comments panel pauses it, and four steps that do not reach a new reel stop it for the session.
+Waiting for Instagram's address bar to change does not work here: a programmatic scroll moves the
+feed without updating the URL, so the feed advanced while nothing was saved. The page script
+instead reports the shortcodes Instagram fetches for the feed (`/api/v1/`, `/graphql`), which is
+what the app downloads from — the cards on this layout carry no post links at all. One response
+holds a whole page of the feed, so every new shortcode is queued at once and the downloader works
+through them one at a time; author and caption travel with those payloads and are stored on the
+catalog entry, with hashtags extracted from the caption. React Native owns the clock, an open
+comments panel pauses stepping, a failed reel returns to the queue for one retry, and four steps
+that cannot advance the feed stop it for the session.
 
 ## Extractor API contract
 

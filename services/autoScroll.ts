@@ -1,5 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+import type { ReelMetadata } from './types';
+
 /** Persisted flag: keep advancing the reels feed while browsing. */
 export const SETTINGS_AUTO_SCROLL_KEY = '@settings_auto_scroll_reels';
 
@@ -9,6 +11,9 @@ export const AUTO_SCROLL_MAX_DELAY_MS = 20000;
 
 /** Consecutive steps that do not move the feed before the loop gives up. */
 export const AUTO_SCROLL_MAX_STALLS = 4;
+
+/** Attempts per reel before a failing download is left alone. */
+export const AUTO_SCROLL_MAX_ATTEMPTS = 2;
 
 export type AutoScrollResult = {
   type: 'AUTO_SCROLL';
@@ -29,6 +34,8 @@ export type AutoScrollResult = {
     lastCode: string;
     /** Every shortcode seen so far, oldest first: the feed order to save from. */
     codes: string[];
+    /** Author and caption Instagram sent alongside those shortcodes. */
+    media: Record<string, ReelMetadata>;
   };
 };
 
@@ -99,6 +106,54 @@ export const AUTO_SCROLL_SCRIPT = `
   // anchor, the shortcodes in those responses are the only DOM-external way to
   // name the reel on screen.
   var captured = [];
+  // code -> { author, caption }, from the same payloads.
+  var media = {};
+
+  function addCode(code) {
+    if (!code || captured.indexOf(code) !== -1) return;
+    captured.push(code);
+    if (captured.length > 50) captured.shift();
+  }
+
+  function addMedia(code, author, caption) {
+    if (!code) return;
+    var entry = media[code] || {};
+    if (author) entry.author = String(author).slice(0, 60);
+    if (caption) entry.caption = String(caption).slice(0, 300);
+    if (entry.author || entry.caption) media[code] = entry;
+  }
+
+  function captionOf(node) {
+    if (node.caption && typeof node.caption.text === 'string') return node.caption.text;
+    var edges = node.edge_media_to_caption && node.edge_media_to_caption.edges;
+    if (edges && edges.length && edges[0] && edges[0].node && typeof edges[0].node.text === 'string') {
+      return edges[0].node.text;
+    }
+    return '';
+  }
+
+  // Walk a decoded payload for clip objects: that is where the shortcode, the
+  // author handle and the caption sit together.
+  function walk(node, depth) {
+    if (!node || typeof node !== 'object' || depth > 12 || walk.budget <= 0) return;
+    walk.budget -= 1;
+    if (Array.isArray(node)) {
+      for (var i = 0; i < node.length; i++) walk(node[i], depth + 1);
+      return;
+    }
+    if (
+      typeof node.code === 'string' &&
+      /^[A-Za-z0-9_-]{8,15}$/.test(node.code) &&
+      (node.video_versions || node.clips_metadata || node.is_video || node.media_type === 2)
+    ) {
+      addCode(node.code);
+      var owner = node.user || node.owner || null;
+      addMedia(node.code, owner ? owner.username : '', captionOf(node));
+    }
+    for (var key in node) {
+      if (Object.prototype.hasOwnProperty.call(node, key)) walk(node[key], depth + 1);
+    }
+  }
 
   function interesting(url) {
     return !!url && (url.indexOf('/api/v1/') !== -1 || url.indexOf('/graphql') !== -1);
@@ -110,17 +165,26 @@ export const AUTO_SCROLL_SCRIPT = `
     // Server-rendered payloads arrive double-escaped (\"code\":\"…\"), which a
     // plain quote match would miss. Stripping backslashes is safe here: a
     // shortcode is only letters, digits, - and _.
-    var slice = text.slice(0, 3000000).split(String.fromCharCode(92)).join('');
+    var raw = text.slice(0, 3000000);
+    var slice = raw.split(String.fromCharCode(92)).join('');
     var patterns = [/"code":"([A-Za-z0-9_-]{8,15})"/g, /"shortcode":"([A-Za-z0-9_-]{8,15})"/g];
     for (var p = 0; p < patterns.length; p++) {
       var match;
-      while ((match = patterns[p].exec(slice))) {
-        var code = match[1];
-        if (captured.indexOf(code) === -1) {
-          captured.push(code);
-          if (captured.length > 50) captured.shift();
-        }
-      }
+      while ((match = patterns[p].exec(slice))) addCode(match[1]);
+    }
+    // The shortcodes are enough to download; author and caption need the real
+    // structure, so decode a copy when the payload is valid JSON.
+    var parsed = null;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (e) {
+      try {
+        parsed = JSON.parse(slice);
+      } catch (e2) {}
+    }
+    if (parsed) {
+      walk.budget = 60000;
+      walk(parsed, 0);
     }
   }
 
@@ -278,6 +342,16 @@ export const AUTO_SCROLL_SCRIPT = `
     return count;
   }
 
+  // Only metadata for the codes this step reports, so the message stays small.
+  function recentMedia() {
+    var out = {};
+    var codes = captured.slice(-30);
+    for (var i = 0; i < codes.length; i++) {
+      if (media[codes[i]]) out[codes[i]] = media[codes[i]];
+    }
+    return out;
+  }
+
   function diag() {
     return {
       postLinks: postLinkCount(),
@@ -286,7 +360,8 @@ export const AUTO_SCROLL_SCRIPT = `
       title: document.title || '',
       captured: captured.length,
       lastCode: captured.length ? captured[captured.length - 1] : '',
-      codes: captured.slice(-30)
+      codes: captured.slice(-30),
+      media: recentMedia()
     };
   }
 

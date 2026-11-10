@@ -7,6 +7,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { describeApiError, isInstagramUrl, parseInstagramUrl } from '../services/api';
 import {
+  AUTO_SCROLL_MAX_ATTEMPTS,
   AUTO_SCROLL_MAX_STALLS,
   AUTO_SCROLL_SCRIPT,
   AUTO_SCROLL_STEP_SCRIPT,
@@ -14,6 +15,7 @@ import {
   nextAutoScrollDelay,
   type AutoScrollResult,
 } from '../services/autoScroll';
+import type { ReelMetadata } from '../services/types';
 
 /** Tray log plus the Metro console, so auto-scroll can be debugged from either. */
 function logLine(message: string) {
@@ -44,6 +46,11 @@ export default function HomeScreen() {
   // Reels already queued by the loop this run, so a stale page URL the page keeps
   // reporting is not downloaded over and over.
   const autoScrollQueuedRef = useRef<Set<string>>(new Set());
+  // Failed attempts per reel: a transient extractor error may pass on a retry,
+  // but a reel that never works must not be retried forever.
+  const autoScrollAttemptsRef = useRef<Map<string, number>>(new Map());
+  // Author and caption the feed sent with each shortcode.
+  const pageMetaRef = useRef<Record<string, ReelMetadata>>({});
 
   // Re-read the setting on focus: it is toggled from the Settings tab.
   useFocusEffect(
@@ -60,7 +67,7 @@ export default function HomeScreen() {
     }, [])
   );
 
-  const handleDetectedUrl = async (url: string) => {
+  const handleDetectedUrl = async (url: string, metadata?: ReelMetadata) => {
     if (!url || !url.startsWith('http')) return;
     setCurrentUrl(url);
 
@@ -76,12 +83,22 @@ export default function HomeScreen() {
     DownloadEvents.emit('log', '>> Reel detected, downloading...');
     downloadsInFlightRef.current += 1;
     try {
-      await DownloadService.downloadReel(url);
+      await DownloadService.downloadReel(url, { source: 'auto', metadata });
     } catch (e: any) {
       // Automatic downloads have no modal open, so report through the overlay.
       DownloadEvents.emit('log', '>> ' + describeApiError(e));
       // Allow a later retry if the user reopens this reel.
       lastHandledRef.current = null;
+      // A reel that failed should not be dropped: put it back in the queue so a
+      // later step tries again, until it has used up its attempts.
+      const attempts = (autoScrollAttemptsRef.current.get(target.shortcode) ?? 0) + 1;
+      autoScrollAttemptsRef.current.set(target.shortcode, attempts);
+      if (attempts < AUTO_SCROLL_MAX_ATTEMPTS) {
+        autoScrollQueuedRef.current.delete(target.shortcode);
+        logLine(`>> auto: ${target.shortcode} failed, will retry (attempt ${attempts})`);
+      } else {
+        logLine(`>> auto: giving up on ${target.shortcode} after ${attempts} attempts`);
+      }
     } finally {
       downloadsInFlightRef.current -= 1;
     }
@@ -158,33 +175,51 @@ export default function HomeScreen() {
         result.href
       )} · postLinks ${diag ? diag.postLinks : '?'} · captured ${diag ? diag.captured : '?'} · page ${path(
         result.url
-      )} · codes ${codes.length ? codes.join(',') : '-'}`
+      )} · codes ${codes.length}${codes.length ? ` (${codes[0]}…)` : ''}`
     );
 
     // An open comments panel is transient: the reel under it is not changing.
     if (result.reason === 'comments-open') return;
 
-    // Name the reel to save. The card's own link is the most accurate source,
+    // Author and caption travel with the shortcodes, so remember them before
+    // queueing anything; the downloader attaches them to the catalog entry.
+    const media = diag?.media || {};
+    for (const code of Object.keys(media)) {
+      pageMetaRef.current[code] = { ...pageMetaRef.current[code], ...media[code] };
+    }
+
+    // Name the reels to save. The card's own link is the most accurate source,
     // but on layouts that render no anchors (postLinks 0) it degrades to the
-    // address bar, which a programmatic scroll never moves — so the shortcodes
-    // Instagram fetched for the feed, in feed order, are the reliable fallback.
+    // address bar, which a programmatic scroll never moves — so every shortcode
+    // Instagram fetched for the feed is queued, in feed order. One payload holds
+    // a whole page of the feed, so this fills the queue in one go instead of one
+    // reel per step; the downloader still runs them one at a time.
     const fromPage =
       parseInstagramUrl(result.href || '') ??
       parseInstagramUrl(diag?.canonical || '') ??
       parseInstagramUrl(diag?.ogUrl || '');
-    const fromFeed = codes
-      .map(code => parseInstagramUrl(`https://www.instagram.com/reel/${code}/`))
-      .find(target => !!target && !autoScrollQueuedRef.current.has(target.shortcode));
-    const target =
-      fromPage && !autoScrollQueuedRef.current.has(fromPage.shortcode) ? fromPage : fromFeed;
 
-    if (target) {
-      autoScrollQueuedRef.current.add(target.shortcode);
-      void handleDetectedUrl(target.canonicalUrl);
-      if (target.shortcode !== autoScrollLastShortcodeRef.current) {
-        autoScrollLastShortcodeRef.current = target.shortcode;
-        autoScrollStallsRef.current = 0;
-      }
+    const candidates: { shortcode: string; url: string }[] = [];
+    if (fromPage && !autoScrollQueuedRef.current.has(fromPage.shortcode)) {
+      candidates.push({ shortcode: fromPage.shortcode, url: fromPage.canonicalUrl });
+    }
+    for (const code of codes) {
+      if (autoScrollQueuedRef.current.has(code)) continue;
+      const parsed = parseInstagramUrl(`https://www.instagram.com/reel/${code}/`);
+      if (parsed) candidates.push({ shortcode: code, url: parsed.canonicalUrl });
+    }
+
+    for (const item of candidates) {
+      autoScrollQueuedRef.current.add(item.shortcode);
+      void handleDetectedUrl(item.url, pageMetaRef.current[item.shortcode]);
+    }
+
+    if (candidates.length) {
+      logLine(`>> auto: queued ${candidates.length} new reel(s) from the page`);
+      autoScrollLastShortcodeRef.current = candidates[candidates.length - 1].shortcode;
+      autoScrollStallsRef.current = 0;
+    } else if (result.ok) {
+      logLine('>> auto: every reel on the page is already queued');
     } else {
       logLine('>> auto: no new reel in the page data yet');
     }
@@ -214,6 +249,7 @@ export default function HomeScreen() {
       autoScrollStallsRef.current = 0;
       autoScrollLastShortcodeRef.current = '';
       autoScrollQueuedRef.current = new Set();
+      autoScrollAttemptsRef.current = new Map();
 
       function schedule() {
         if (cancelled) return;
@@ -223,9 +259,12 @@ export default function HomeScreen() {
       function tick() {
         timer = null;
         if (cancelled) return;
+        // Downloads no longer block the scroll: the queue is keyed by shortcode,
+        // so a reel cannot be missed by advancing the feed meanwhile.
         if (downloadsInFlightRef.current > 0) {
-          logLine('>> auto: holding the step, a download is running');
-        } else if (webViewRef.current) {
+          logLine(`>> auto: stepping with ${downloadsInFlightRef.current} download(s) in flight`);
+        }
+        if (webViewRef.current) {
           webViewRef.current.injectJavaScript(AUTO_SCROLL_STEP_SCRIPT);
         }
         schedule();

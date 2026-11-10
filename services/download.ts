@@ -6,6 +6,7 @@ import {
   getInfoAsync,
 } from 'expo-file-system/legacy';
 
+import { extractHashtags } from '../utils/format';
 import { ApiError, authorFromUrl, describeApiError, extractVideoUrl, parseInstagramUrl } from './api';
 import { Catalog } from './catalog';
 import { DownloadEvents } from './events';
@@ -16,6 +17,7 @@ import type {
   DownloadSource,
   LibraryStats,
   ReelData,
+  ReelMetadata,
 } from './types';
 
 export { DownloadEvents } from './events';
@@ -55,9 +57,10 @@ export class DownloadService {
    */
   static async downloadReel(
     postUrl: string,
-    options: { source?: DownloadSource } = {}
+    options: { source?: DownloadSource; metadata?: ReelMetadata } = {}
   ): Promise<ReelData | null> {
     const source = options.source ?? 'auto';
+    const metadata = options.metadata;
     const target = parseInstagramUrl(postUrl);
 
     if (!target) {
@@ -82,8 +85,8 @@ export class DownloadService {
     }
 
     const promise = this.queue.enqueue(
-      { postId, originalUrl: postUrl, source },
-      () => this.processOne({ postId, originalUrl: postUrl, source })
+      { postId, originalUrl: postUrl, source, metadata },
+      () => this.processOne({ postId, originalUrl: postUrl, source, metadata })
     );
 
     this.log(`Queued ${postId}`);
@@ -137,12 +140,18 @@ export class DownloadService {
       const info = await getInfoAsync(result.uri).catch(() => null);
       const sizeBytes = info && info.exists && 'size' in info ? info.size : undefined;
 
+      // What the feed told us about this reel beats guessing from the URL: the
+      // URL the app builds has no username in it.
+      const caption = job.metadata?.caption || undefined;
+      const hashtags = extractHashtags(caption);
       const reel: ReelData = {
         id: postId,
         localUri: result.uri,
         originalUrl,
         timestamp: Date.now(),
-        author: authorFromUrl(originalUrl) ?? undefined,
+        author: job.metadata?.author || authorFromUrl(originalUrl) || undefined,
+        caption,
+        hashtags: hashtags.length ? hashtags : undefined,
         sizeBytes,
         mediaType: parseInstagramUrl(originalUrl)?.isPost ? 'post' : 'reel',
       };

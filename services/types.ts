@@ -10,11 +10,19 @@ export interface ReelData {
   author?: string;
   /** Caption text — only present once the extractor returns metadata. */
   caption?: string;
+  /** Hashtags found in the caption, without the leading `#`. */
+  hashtags?: string[];
   /** Size of the downloaded file in bytes (filled in lazily for old entries). */
   sizeBytes?: number;
   /** Video length in ms, when known. */
   durationMs?: number;
   mediaType?: 'reel' | 'post';
+}
+
+/** What the reels feed already knows about a clip before it is downloaded. */
+export interface ReelMetadata {
+  author?: string;
+  caption?: string;
 }
 
 export interface LibraryStats {
@@ -35,6 +43,7 @@ export interface DownloadJobMeta {
   postId: string;
   originalUrl: string;
   source: DownloadSource;
+  metadata?: ReelMetadata;
 }
 
 export interface DownloadEventMap {
