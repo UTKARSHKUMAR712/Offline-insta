@@ -101,6 +101,15 @@ Catalog.upsert() → success event / error event → toast
 Failed or aborted downloads delete their partial file; every reel stores its author (when the
 URL carries one), byte size and media type, and older entries are migrated on first read.
 
+### Offline feed
+
+`(tabs)/explore.tsx` and `(tabs)/saved.tsx` are full-screen vertical feeds. A tap anywhere on the
+video plays or pauses it (the play badge appears when paused, with a mute toggle above it, kept
+off dead centre so it does not eat the pause tap). Long captions are clipped to two lines and open
+with *more*; the username and caption come from the data stored at download time. Both screens
+pause the player on blur, so leaving the tab — or opening another screen — stops the audio instead
+of letting the reel play on behind it.
+
 ### Auto-scroll
 
 Settings → *Auto-Scroll Reels* advances the Instagram feed at a random 7–20 seconds per reel, so

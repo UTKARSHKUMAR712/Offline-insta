@@ -141,6 +141,8 @@ const SavedReelItem = React.memo(function SavedReelItem({ item, isActive, itemHe
 }) {
   const palette = usePalette();
   const [isMuted, setIsMuted] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [captionExpanded, setCaptionExpanded] = useState(false);
 
   const player = useVideoPlayer(item.localUri, p => {
     p.loop = true;
@@ -149,9 +151,19 @@ const SavedReelItem = React.memo(function SavedReelItem({ item, isActive, itemHe
   });
 
   useEffect(() => {
-    if (isActive) player.play();
-    else { player.pause(); player.currentTime = 0; }
-  }, [isActive, player]);
+    if (isActive && !isPaused) player.play();
+    else { player.pause(); if (!isActive) player.currentTime = 0; }
+  }, [isActive, isPaused, player]);
+
+  // Switching tabs must silence the reel: this screen stays mounted behind them.
+  useFocusEffect(
+    useCallback(() => {
+      if (isActive && !isPaused) player.play();
+      return () => {
+        player.pause();
+      };
+    }, [isActive, isPaused, player])
+  );
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', state => {
@@ -162,6 +174,13 @@ const SavedReelItem = React.memo(function SavedReelItem({ item, isActive, itemHe
   }, [isActive, player]);
 
   useEffect(() => { player.muted = isMuted; }, [isMuted, player]);
+
+  const togglePlayPause = () => {
+    const next = !isPaused;
+    setIsPaused(next);
+    if (next) player.pause();
+    else player.play();
+  };
 
   const handleUnsave = async () => {
     await DownloadService.toggleSaveReel(item.id);
@@ -195,25 +214,62 @@ const SavedReelItem = React.memo(function SavedReelItem({ item, isActive, itemHe
     }
   };
 
+  const caption = item.caption?.trim() ?? '';
+  const canExpand = caption.length > 110 || caption.split('\n').length > 2;
+
   return (
-    <Pressable style={[styles.reelContainer, { height: itemHeight }]} onPress={() => setIsMuted(m => !m)}>
-      <VideoView
-        player={player}
+    <View style={[styles.reelContainer, { height: itemHeight }]}>
+      <Pressable
         style={StyleSheet.absoluteFill}
-        contentFit="cover"
-        nativeControls={false}
-      />
-      {isMuted && (
-        <View style={styles.muteIndicator}>
-          <Ionicons name="volume-mute" size={28} color="rgba(255,255,255,0.8)" />
-        </View>
-      )}
-      <View style={styles.bottomOverlay}>
+        onPress={togglePlayPause}
+        accessibilityLabel="Play or pause reel"
+      >
+        <VideoView
+          player={player}
+          style={StyleSheet.absoluteFill}
+          contentFit="cover"
+          nativeControls={false}
+        />
+      </Pressable>
+
+      {/* Mute above the play button, clear of dead centre so a tap in the
+          middle still plays/pauses instead of muting. */}
+      <View style={styles.centerControls} pointerEvents="box-none">
+        <Pressable
+          onPress={() => setIsMuted(m => !m)}
+          style={[styles.circleButton, styles.mutePosition]}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={isMuted ? 'Unmute reel' : 'Mute reel'}
+        >
+          <Ionicons name={isMuted ? 'volume-mute' : 'volume-high'} size={18} color="white" />
+        </Pressable>
+        {isPaused && (
+          <Pressable
+            onPress={togglePlayPause}
+            style={[styles.playButton, styles.playPosition]}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Play reel"
+          >
+            <Ionicons name="play" size={34} color="white" style={styles.playIcon} />
+          </Pressable>
+        )}
+      </View>
+
+      <View style={styles.bottomOverlay} pointerEvents="box-none">
         <Text style={styles.titleText} numberOfLines={1}>
           {item.author ? `@${item.author}` : item.id}
         </Text>
-        {!!item.caption && (
-          <Text style={styles.captionText} numberOfLines={2}>{item.caption}</Text>
+        {!!caption && (
+          <Pressable onPress={() => setCaptionExpanded(v => !v)} disabled={!canExpand}>
+            <Text style={styles.captionText} numberOfLines={captionExpanded ? undefined : 2}>
+              {caption}
+            </Text>
+            {canExpand && (
+              <Text style={styles.moreText}>{captionExpanded ? 'less' : 'more'}</Text>
+            )}
+          </Pressable>
         )}
         <Text style={styles.metaText}>
           Saved {formatDate(item.timestamp)} · {formatBytes(item.sizeBytes)}
@@ -248,7 +304,7 @@ const SavedReelItem = React.memo(function SavedReelItem({ item, isActive, itemHe
           <Text style={[styles.actionText, { color: '#ff4444' }]}>Delete</Text>
         </Pressable>
       </View>
-    </Pressable>
+    </View>
   );
 });
 
@@ -258,10 +314,24 @@ const styles = StyleSheet.create({
   emptyText: { fontSize: 18, fontWeight: 'bold', marginTop: 12 },
   subText: { fontSize: 14, textAlign: 'center', marginTop: 8, lineHeight: 20 },
   reelContainer: { width: windowWidth, backgroundColor: 'black', overflow: 'hidden' },
-  muteIndicator: {
-    position: 'absolute', top: '45%', alignSelf: 'center',
-    backgroundColor: 'rgba(0,0,0,0.5)', borderRadius: 30, padding: 10, zIndex: 10,
+  centerControls: {
+    position: 'absolute', top: 0, left: 0, right: 0, bottom: 0,
+    alignItems: 'center',
   },
+  mutePosition: { position: 'absolute', top: '34%' },
+  playPosition: { position: 'absolute', top: '50%', marginTop: -33 },
+  circleButton: {
+    width: 38, height: 38, borderRadius: 19,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  playButton: {
+    width: 66, height: 66, borderRadius: 33,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  // The triangle looks off-centre without a nudge to the right.
+  playIcon: { marginLeft: 4 },
   header: {
     position: 'absolute',
     left: 12,
@@ -282,8 +352,9 @@ const styles = StyleSheet.create({
     position: 'absolute', bottom: 0, left: 0, right: 90,
     padding: 15, paddingBottom: 25, backgroundColor: 'rgba(0,0,0,0.3)',
   },
-  titleText: { color: 'white', fontSize: 15, fontWeight: '600', marginBottom: 4 },
-  captionText: { color: 'white', fontSize: 14, marginBottom: 4 },
+  titleText: { color: 'white', fontSize: 15, fontWeight: '700', marginBottom: 4 },
+  captionText: { color: 'white', fontSize: 14, lineHeight: 19 },
+  moreText: { color: 'rgba(255,255,255,0.6)', fontSize: 14, fontWeight: '600', marginTop: 2 },
   metaText: { color: 'rgba(255,255,255,0.7)', fontSize: 12 },
   rightActionsRow: { position: 'absolute', bottom: 24, right: 12, alignItems: 'center' },
   actionItem: { alignItems: 'center', marginBottom: 18 },

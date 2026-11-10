@@ -386,6 +386,8 @@ const ReelItem = React.memo(function ReelItem({ item, isActive, isDeleted, itemH
   const palette = usePalette();
   const [isSavedLocally, setIsSavedLocally] = useState<boolean>(item.isSaved || false);
   const [isMuted, setIsMuted] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const [captionExpanded, setCaptionExpanded] = useState(false);
 
   // expo-video player — created once per item
   const player = useVideoPlayer(item.localUri, p => {
@@ -400,13 +402,24 @@ const ReelItem = React.memo(function ReelItem({ item, isActive, isDeleted, itemH
       player.pause();
       return;
     }
-    if (isActive) {
+    if (isActive && !isPaused) {
       player.play();
     } else {
       player.pause();
-      player.currentTime = 0;
+      if (!isActive) player.currentTime = 0;
     }
-  }, [isActive, isDeleted, player]);
+  }, [isActive, isDeleted, isPaused, player]);
+
+  // Leaving the tab (or this screen) must stop the audio: the feed stays mounted
+  // behind the other tabs, so nothing else would ever pause it.
+  useFocusEffect(
+    useCallback(() => {
+      if (isActive && !isPaused && !isDeleted) player.play();
+      return () => {
+        player.pause();
+      };
+    }, [isActive, isPaused, isDeleted, player])
+  );
 
   // Handle app backgrounding
   useEffect(() => {
@@ -422,6 +435,13 @@ const ReelItem = React.memo(function ReelItem({ item, isActive, isDeleted, itemH
   useEffect(() => {
     player.muted = isMuted;
   }, [isMuted, player]);
+
+  const togglePlayPause = () => {
+    const next = !isPaused;
+    setIsPaused(next);
+    if (next) player.pause();
+    else player.play();
+  };
 
   const handleToggleSave = async () => {
     const updated = await DownloadService.toggleSaveReel(item.id);
@@ -509,27 +529,65 @@ const ReelItem = React.memo(function ReelItem({ item, isActive, isDeleted, itemH
     );
   }
 
-  const title = item.author ? `@${item.author}` : item.id;
+  const author = item.author ? `@${item.author}` : item.id;
+  const initial = (item.author || item.id).replace(/^@/, '').charAt(0).toUpperCase();
+  const caption = item.caption?.trim() ?? '';
+  // Only offer "more" for captions that cannot fit the two lines on show.
+  const canExpand = caption.length > 110 || caption.split('\n').length > 2;
 
   return (
-    <Pressable style={[styles.reelContainer, { height: itemHeight }]} onPress={() => setIsMuted(m => !m)}>
-      <VideoView
-        player={player}
-        style={StyleSheet.absoluteFill}
-        contentFit="cover"
-        nativeControls={false}
-      />
+    <View style={[styles.reelContainer, { height: itemHeight }]}>
+      <Pressable style={StyleSheet.absoluteFill} onPress={togglePlayPause} accessibilityLabel="Play or pause reel">
+        <VideoView
+          player={player}
+          style={StyleSheet.absoluteFill}
+          contentFit="cover"
+          nativeControls={false}
+        />
+      </Pressable>
 
-      {isMuted && (
-        <View style={styles.muteIndicator}>
-          <Ionicons name="volume-mute" size={28} color="rgba(255,255,255,0.8)" />
+      {/* Mute above the play button, the way the feed places them. The mute
+          circle sits clear of dead centre so a tap in the middle still
+          plays/pauses instead of muting. */}
+      <View style={styles.centerControls} pointerEvents="box-none">
+        <Pressable
+          onPress={() => setIsMuted(m => !m)}
+          style={[styles.circleButton, styles.mutePosition]}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={isMuted ? 'Unmute reel' : 'Mute reel'}
+        >
+          <Ionicons name={isMuted ? 'volume-mute' : 'volume-high'} size={18} color="white" />
+        </Pressable>
+        {isPaused && (
+          <Pressable
+            onPress={togglePlayPause}
+            style={[styles.playButton, styles.playPosition]}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Play reel"
+          >
+            <Ionicons name="play" size={34} color="white" style={styles.playIcon} />
+          </Pressable>
+        )}
+      </View>
+
+      <View style={styles.bottomOverlay} pointerEvents="box-none">
+        <View style={styles.authorRow}>
+          <View style={styles.avatar}>
+            <Text style={styles.avatarText}>{initial}</Text>
+          </View>
+          <Text style={styles.authorText} numberOfLines={1}>{author}</Text>
         </View>
-      )}
-
-      <View style={styles.bottomOverlay}>
-        <Text style={styles.captionText} numberOfLines={1}>{title}</Text>
-        {!!item.caption && (
-          <Text style={styles.captionText} numberOfLines={2}>{item.caption}</Text>
+        {!!caption && (
+          <Pressable onPress={() => setCaptionExpanded(v => !v)} disabled={!canExpand}>
+            <Text style={styles.captionText} numberOfLines={captionExpanded ? undefined : 2}>
+              {caption}
+            </Text>
+            {canExpand && (
+              <Text style={styles.moreText}>{captionExpanded ? 'less' : 'more'}</Text>
+            )}
+          </Pressable>
         )}
         <Text style={styles.metaText}>
           {formatDate(item.timestamp)} · {formatBytes(item.sizeBytes)}
@@ -581,7 +639,7 @@ const ReelItem = React.memo(function ReelItem({ item, isActive, isDeleted, itemH
           <Text style={[styles.actionText, { color: '#ff4444' }]}>Delete</Text>
         </Pressable>
       </View>
-    </Pressable>
+    </View>
   );
 });
 
@@ -671,29 +729,89 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     overflow: 'hidden',
   },
-  muteIndicator: {
+  centerControls: {
     position: 'absolute',
-    top: '45%',
-    alignSelf: 'center',
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    borderRadius: 30,
-    padding: 10,
-    zIndex: 10,
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: 'center',
+  },
+  mutePosition: {
+    position: 'absolute',
+    top: '34%',
+  },
+  playPosition: {
+    position: 'absolute',
+    top: '50%',
+    marginTop: -33,
+  },
+  circleButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  playButton: {
+    width: 66,
+    height: 66,
+    borderRadius: 33,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  playIcon: {
+    // The triangle looks off-centre without a nudge to the right.
+    marginLeft: 4,
   },
   bottomOverlay: {
     position: 'absolute',
     bottom: 0,
     left: 0,
-    right: 90,
+    right: 84,
     padding: 15,
     paddingBottom: 25,
-    backgroundColor: 'rgba(0,0,0,0.3)', // Fades text into view
+    backgroundColor: 'rgba(0,0,0,0.35)', // Fades text into view
+  },
+  authorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  avatar: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: 'rgba(255,255,255,0.22)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  avatarText: {
+    color: 'white',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  authorText: {
+    color: 'white',
+    fontSize: 14,
+    fontWeight: '700',
+    flexShrink: 1,
   },
   captionText: {
     color: 'white',
     fontSize: 14,
+    lineHeight: 19,
+  },
+  moreText: {
+    color: 'rgba(255,255,255,0.6)',
+    fontSize: 14,
     fontWeight: '600',
-    marginBottom: 4,
+    marginTop: 2,
   },
   metaText: {
     color: 'rgba(255,255,255,0.7)',
