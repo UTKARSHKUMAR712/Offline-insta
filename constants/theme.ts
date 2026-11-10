@@ -5,6 +5,56 @@
 
 import { Platform } from 'react-native';
 
+export interface Palette {
+  isDark: boolean;
+  background: string;
+  surface: string;
+  surfaceAlt: string;
+  border: string;
+  text: string;
+  textMuted: string;
+  accent: string;
+  onAccent: string;
+  danger: string;
+  success: string;
+  gold: string;
+}
+
+/**
+ * Single source of truth for app chrome colours. Screens must not hardcode
+ * `#111` / `#222` anymore — ask for the palette instead.
+ */
+export const Palettes: { light: Palette; dark: Palette } = {
+  dark: {
+    isDark: true,
+    background: '#0B0B0C',
+    surface: '#161618',
+    surfaceAlt: '#1F1F22',
+    border: '#2C2C30',
+    text: '#F2F2F4',
+    textMuted: '#9A9AA0',
+    accent: '#0095F6',
+    onAccent: '#FFFFFF',
+    danger: '#FF4D4F',
+    success: '#3DDC84',
+    gold: '#FFD700',
+  },
+  light: {
+    isDark: false,
+    background: '#FFFFFF',
+    surface: '#F4F4F6',
+    surfaceAlt: '#EAEAEE',
+    border: '#DDDDE2',
+    text: '#111214',
+    textMuted: '#6B6B72',
+    accent: '#0095F6',
+    onAccent: '#FFFFFF',
+    danger: '#D92D20',
+    success: '#0E7C3A',
+    gold: '#B8860B',
+  },
+};
+
 const tintColorLight = '#0a7ea4';
 const tintColorDark = '#fff';
 

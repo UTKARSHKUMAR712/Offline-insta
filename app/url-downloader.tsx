@@ -1,13 +1,16 @@
-import { StyleSheet, View, Text, TextInput, Pressable, KeyboardAvoidingView, Platform, Keyboard } from 'react-native';
-import { useState, useEffect } from 'react';
-import { DownloadService, DownloadEvents } from '../../services/download';
+import { StyleSheet, View, Text, TextInput, Pressable, KeyboardAvoidingView, Platform, Keyboard, Alert } from 'react-native';
+import { useState } from 'react';
+import { DownloadService, DownloadEvents } from '../services/download';
 import { useRouter } from 'expo-router';
 import { useVideoPlayer, VideoView } from 'expo-video';
-import { ConfigManager } from '../../services/ConfigManager';
-import { DownloadProgressOverlay } from '../../components/DownloadProgressOverlay';
+import { describeApiError, extractVideoUrl, parseInstagramUrl } from '../services/api';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { usePalette } from '../hooks/use-palette';
 
 export default function UrlDownloaderScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const palette = usePalette();
   const [url, setUrl] = useState('');
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [isFetchingPreview, setIsFetchingPreview] = useState(false);
@@ -27,30 +30,24 @@ export default function UrlDownloaderScreen() {
     const trimmedUrl = url.trim();
     if (!trimmedUrl) return;
 
-    if (!trimmedUrl.toLowerCase().includes('instagram.com')) {
-      DownloadEvents.emit('log', '>> Invalid URL (not Instagram)');
+    if (!parseInstagramUrl(trimmedUrl)) {
+      DownloadEvents.emit('log', '>> Invalid URL (not an Instagram reel/post)');
+      Alert.alert('Invalid link', 'Paste an Instagram reel or post link, for example https://www.instagram.com/reel/…');
       return;
     }
 
     setIsFetchingPreview(true);
     setPreviewUrl(null);
     DownloadEvents.emit('log', '>> Fetching preview...');
-    
+
     try {
-      const apiUrl = await ConfigManager.getApiUrl();
-      const response = await fetch(`${apiUrl}?url=${encodeURIComponent(trimmedUrl)}`);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.json();
-      
-      const videoUrl = data?.data?.videoUrl;
-      if (videoUrl) {
-        setPreviewUrl(videoUrl);
-        DownloadEvents.emit('log', '>> Preview ready');
-      } else {
-        throw new Error('No video URL found');
-      }
+      const { videoUrl } = await extractVideoUrl(trimmedUrl);
+      setPreviewUrl(videoUrl);
+      DownloadEvents.emit('log', '>> Preview ready');
     } catch (e: any) {
-      DownloadEvents.emit('log', '>> Preview Error: ' + e.message);
+      const message = describeApiError(e);
+      DownloadEvents.emit('log', '>> Preview Error: ' + message);
+      Alert.alert('Preview unavailable', message);
     } finally {
       setIsFetchingPreview(false);
     }
@@ -59,15 +56,15 @@ export default function UrlDownloaderScreen() {
   const handleDownload = async () => {
     const trimmedUrl = url.trim();
     if (!trimmedUrl) return;
-    
+
     setIsDownloading(true);
     DownloadEvents.emit('log', '>> Starting manual download...');
-    
+
     try {
-      await DownloadService.downloadReel(trimmedUrl);
-      // setUrl(''); // Keep URL around so preview doesn't disappear immediately
+      // Resolves only once the file is actually on disk.
+      await DownloadService.downloadReel(trimmedUrl, { source: 'manual' });
     } catch (e: any) {
-      DownloadEvents.emit('log', '>> Error: ' + e.message);
+      Alert.alert('Download failed', describeApiError(e));
     } finally {
       setIsDownloading(false);
     }
@@ -78,7 +75,7 @@ export default function UrlDownloaderScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       style={styles.container}
     >
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: insets.top + 12, borderBottomColor: palette.border }]}>
         <Pressable onPress={() => router.back()} style={styles.backBtn}>
           <Text style={styles.backText}>← Back</Text>
         </Pressable>
@@ -132,8 +129,6 @@ export default function UrlDownloaderScreen() {
         )}
       </View>
 
-      {/* Extracted isolated overlay that handles its own re-renders on progress ticks */}
-      <DownloadProgressOverlay />
     </KeyboardAvoidingView>
   );
 }

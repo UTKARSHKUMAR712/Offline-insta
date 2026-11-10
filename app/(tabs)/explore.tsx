@@ -1,46 +1,132 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { StyleSheet, View, Text, FlatList, Dimensions, ViewToken, AppState, LayoutChangeEvent, Pressable, Alert } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Alert,
+  AppState,
+  Dimensions,
+  FlatList,
+  LayoutChangeEvent,
+  Linking,
+  ListViewToken,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import * as Sharing from 'expo-sharing';
-import { useFocusEffect, useRouter } from 'expo-router';
+import * as MediaLibrary from 'expo-media-library';
+import * as Clipboard from 'expo-clipboard';
+import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { DownloadService, ReelData, DownloadEvents } from '../../services/download';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const { height: windowHeight, width: windowWidth } = Dimensions.get('window');
+import { usePalette } from '../../hooks/use-palette';
+import { DownloadService, ReelData, DownloadEvents } from '../../services/download';
+import { formatBytes, formatDate } from '../../utils/format';
+
+const { width: windowWidth } = Dimensions.get('window');
 
 const LAST_VIEWED_INDEX_KEY = '@last_viewed_reel_index';
 
+type SortMode = 'newest' | 'oldest' | 'largest' | 'smallest';
+
+const SORT_ORDER: SortMode[] = ['newest', 'oldest', 'largest', 'smallest'];
+
+const SORT_LABEL: Record<SortMode, string> = {
+  newest: 'Newest',
+  oldest: 'Oldest',
+  largest: 'Largest',
+  smallest: 'Smallest',
+};
+
 export default function OfflineReelsFeed() {
-  const router = useRouter();
+  const palette = usePalette();
+  const insets = useSafeAreaInsets();
+
   const [reels, setReels] = useState<ReelData[]>([]);
   const [loading, setLoading] = useState(true);
   const [itemHeight, setItemHeight] = useState(Dimensions.get('window').height - 80);
   const [autoDelete, setAutoDelete] = useState(false);
-  
-  // Keep a synchronous ref of reels to prevent stale closures in onViewableItemsChanged
+  // Items whose file was auto-deleted stay in the list (so the scroll position
+  // doesn't jump) but render a placeholder instead of a dead VideoView.
+  const [deletedIds, setDeletedIds] = useState<Set<string>>(() => new Set());
+
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [sort, setSort] = useState<SortMode>('newest');
+
+  // Keep synchronous refs so the viewability callback never closes over stale values.
   const reelsRef = useRef<ReelData[]>(reels);
-  useEffect(() => { reelsRef.current = reels; }, [reels]);
+
+  // RN's ViewabilityHelper captures the callback at mount, so the auto-delete
+  // toggle must be read from a ref instead of being a dependency.
+  const autoDeleteRef = useRef(false);
+  useEffect(() => { autoDeleteRef.current = autoDelete; }, [autoDelete]);
 
   // Track which reel is currently visible on screen
   const [activeVideoIndex, setActiveVideoIndex] = useState(0);
+  const activeIndexRef = useRef(0);
 
   // Reference for the FlatList to jump to the saved position
   const flatListRef = useRef<FlatList>(null);
-  
-  // Ref to track if we've successfully scrolled to the initial index yet
+
   // Ref to track if we've successfully scrolled to the initial index yet
   const hasInitializedScroll = useRef(false);
 
+  const visibleReels = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    const filtered = needle
+      ? reels.filter(reel =>
+          [reel.author ?? '', reel.caption ?? '', reel.id]
+            .some(field => field.toLowerCase().includes(needle))
+        )
+      : reels;
+
+    const sorted = [...filtered];
+    switch (sort) {
+      case 'oldest':
+        sorted.sort((a, b) => a.timestamp - b.timestamp);
+        break;
+      case 'largest':
+        sorted.sort((a, b) => (b.sizeBytes ?? 0) - (a.sizeBytes ?? 0));
+        break;
+      case 'smallest':
+        sorted.sort((a, b) => (a.sizeBytes ?? 0) - (b.sizeBytes ?? 0));
+        break;
+      default:
+        sorted.sort((a, b) => b.timestamp - a.timestamp);
+    }
+    return sorted;
+  }, [reels, query, sort]);
+
+  useEffect(() => { reelsRef.current = visibleReels; }, [visibleReels]);
+
+  const libraryBytes = useMemo(
+    () => reels.reduce((sum, reel) => sum + (reel.sizeBytes ?? 0), 0),
+    [reels]
+  );
+
   useEffect(() => {
-    const handleToggleSave = (data: { id: string, isSaved: boolean }) => {
-      setReels(prevReels => prevReels.map(r => 
-        r.id === data.id ? { ...r, isSaved: data.isSaved } : r
-      ));
+    const handleToggleSave = (data: { id: string; isSaved: boolean }) => {
+      setReels(prevReels =>
+        prevReels.map(r => (r.id === data.id ? { ...r, isSaved: data.isSaved } : r))
+      );
+    };
+    const handleDeleted = (postId: string) => {
+      setDeletedIds(prev => {
+        if (prev.has(postId)) return prev;
+        const next = new Set(prev);
+        next.add(postId);
+        return next;
+      });
     };
     DownloadEvents.on('toggleSave', handleToggleSave);
+    DownloadEvents.on('delete', handleDeleted);
     return () => {
       DownloadEvents.off('toggleSave', handleToggleSave);
+      DownloadEvents.off('delete', handleDeleted);
     };
   }, []);
 
@@ -51,71 +137,75 @@ export default function OfflineReelsFeed() {
 
       const loadReels = async () => {
         try {
-          const downloadedReels = await DownloadService.getDownloadedReels();
-          const autoDelEnabled = await DownloadService.getAutoDeleteEnabled();
-          if (isActive) {
-            setReels(downloadedReels);
-            setAutoDelete(autoDelEnabled);
-            
-            // Try to load the user's last saved scroll position
-            const savedIndexStr = await AsyncStorage.getItem(LAST_VIEWED_INDEX_KEY);
-            if (savedIndexStr) {
-              const savedIndex = parseInt(savedIndexStr, 10);
-              // Ensure the saved index is within bounds of our current array
-              if (savedIndex >= 0 && savedIndex < downloadedReels.length) {
-                setActiveVideoIndex(savedIndex);
-              }
-            }
-            setLoading(false);
-          }
+          const [downloadedReels, autoDelEnabled, savedIndexStr] = await Promise.all([
+            DownloadService.getDownloadedReels(),
+            DownloadService.getAutoDeleteEnabled(),
+            AsyncStorage.getItem(LAST_VIEWED_INDEX_KEY),
+          ]);
+          if (!isActive) return;
+
+          setReels(downloadedReels);
+          setAutoDelete(autoDelEnabled);
+          autoDeleteRef.current = autoDelEnabled;
+          setDeletedIds(new Set());
+
+          // Restore the last position, clamped to the current list.
+          const savedIndex = savedIndexStr ? parseInt(savedIndexStr, 10) : 0;
+          const startIndex = Number.isFinite(savedIndex)
+            ? Math.max(0, Math.min(savedIndex, downloadedReels.length - 1))
+            : 0;
+          setActiveVideoIndex(startIndex);
+          activeIndexRef.current = startIndex;
+
+          setLoading(false);
         } catch (e) {
-          console.error("Error loading offline reels:", e);
+          console.error('Error loading offline reels:', e);
           if (isActive) setLoading(false);
         }
       };
 
+      // Every return to the feed starts a fresh list, so allow one restore.
+      hasInitializedScroll.current = false;
       loadReels();
 
       return () => {
         isActive = false;
-        // Optional: Save the index when leaving the screen
-        AsyncStorage.setItem(LAST_VIEWED_INDEX_KEY, activeVideoIndex.toString()).catch(() => {});
+        // Save the position we are actually on, not the first render's value.
+        AsyncStorage.setItem(LAST_VIEWED_INDEX_KEY, activeIndexRef.current.toString()).catch(() => {});
       };
     }, [])
   );
 
   // Check what video is currently visible on screen to pause/play them
-  const onViewableItemsChanged = useCallback(({ viewableItems }: { viewableItems: ViewToken[] }) => {
-    if (viewableItems.length > 0) {
-      const newActiveIndex = viewableItems[0].index || 0;
-      
-      setActiveVideoIndex(prevIndex => {
-        // Auto-delete logic: If we swiped down to a new video, and auto-delete is ON
-        if (autoDelete && newActiveIndex > prevIndex) {
-          const reelToMaybeDelete = reelsRef.current[prevIndex];
-          if (reelToMaybeDelete && !reelToMaybeDelete.isSaved) {
-            // Hard delete the previous reel since we swiped past it
-            DownloadService.deleteReel(reelToMaybeDelete.id).then(() => {
-              // We don't remove it from the FlatList local state to prevent aggressive scroll jumping,
-              // but it'll be gone next time the app loads.
-              console.log('Auto-deleted reel:', reelToMaybeDelete.id);
-            });
-          }
-        }
-        return newActiveIndex;
-      });
-      
-      // Save this position to persistence storage immediately
-      AsyncStorage.setItem(LAST_VIEWED_INDEX_KEY, newActiveIndex.toString()).catch(() => {});
-    }
-  }, [autoDelete]);
+  const onViewableItemsChanged = useCallback(({ viewableItems }: { viewableItems: ListViewToken[] }) => {
+    if (viewableItems.length === 0) return;
 
-  const viewabilityConfig = useRef({
-    itemVisiblePercentThreshold: 50, // Consider a video 'active' when it takes up at least 50% of the screen
-  }).current;
+    const newActiveIndex = viewableItems[0].index ?? 0;
+    const previousIndex = activeIndexRef.current;
+    activeIndexRef.current = newActiveIndex;
+    setActiveVideoIndex(newActiveIndex);
+
+    // Auto-delete: once the user has moved forward, reclaim the reel they left.
+    if (autoDeleteRef.current && newActiveIndex > previousIndex) {
+      const reelToMaybeDelete = reelsRef.current[previousIndex];
+      if (reelToMaybeDelete && !reelToMaybeDelete.isSaved) {
+        DownloadService.deleteReel(reelToMaybeDelete.id).catch(() => {});
+      }
+    }
+
+    // Save this position to persistence storage immediately
+    AsyncStorage.setItem(LAST_VIEWED_INDEX_KEY, newActiveIndex.toString()).catch(() => {});
+  }, []);
+
+  // Stable object for FlatList; useMemo keeps it identity-stable without
+  // reading a ref during render.
+  const viewabilityConfig = useMemo(
+    () => ({ itemVisiblePercentThreshold: 50 }), // 'active' at 50% visibility
+    []
+  );
 
   const onContainerLayout = (event: LayoutChangeEvent) => {
-    // Get the exact height of the viewable area (which excludes the botttom tab layout)
+    // Get the exact height of the viewable area (which excludes the bottom tabs)
     const { height } = event.nativeEvent.layout;
     if (height > 0) {
       setItemHeight(height);
@@ -124,56 +214,77 @@ export default function OfflineReelsFeed() {
 
   // Once the data has loaded and the list is rendered, scroll to the saved position
   const onLayoutScroll = () => {
-    if (!hasInitializedScroll.current && reels.length > 0 && activeVideoIndex > 0) {
-       // Timeout ensures the list has had a frame to measure items
-       setTimeout(() => {
-         flatListRef.current?.scrollToIndex({ 
-           index: activeVideoIndex, 
-           animated: false 
-         });
-         hasInitializedScroll.current = true;
-       }, 100);
-    } else if (!hasInitializedScroll.current) {
-        hasInitializedScroll.current = true;
+    if (hasInitializedScroll.current) return;
+    hasInitializedScroll.current = true;
+
+    const index = activeIndexRef.current;
+    if (reels.length === 0 || index <= 0) return;
+
+    // Timeout ensures the list has had a frame to measure items
+    setTimeout(() => {
+      flatListRef.current?.scrollToIndex({ index, animated: false });
+    }, 100);
+  };
+
+  // A new filter or sort order means the old position is meaningless.
+  const didMount = useRef(true);
+  useEffect(() => {
+    if (didMount.current) {
+      didMount.current = false;
+      return;
     }
+    activeIndexRef.current = 0;
+    setActiveVideoIndex(0);
+    hasInitializedScroll.current = true;
+    flatListRef.current?.scrollToOffset({ offset: 0, animated: false });
+  }, [query, sort]);
+
+  const handleDeleteReel = (id: string) => {
+    setReels(prev => prev.filter(r => r.id !== id));
+  };
+
+  const cycleSort = () => {
+    const next = SORT_ORDER[(SORT_ORDER.indexOf(sort) + 1) % SORT_ORDER.length];
+    setSort(next);
+  };
+
+  const closeSearch = () => {
+    setSearchOpen(false);
+    setQuery('');
   };
 
   if (loading) {
     return (
-      <View style={styles.centerContainer}>
-        <Text style={styles.emptyText}>Loading downloaded reels...</Text>
+      <View style={[styles.centerContainer, { backgroundColor: palette.background }]}>
+        <Text style={[styles.emptyText, { color: palette.text }]}>Loading downloaded reels…</Text>
       </View>
     );
   }
 
   if (reels.length === 0) {
     return (
-      <View style={styles.centerContainer}>
-        <Text style={styles.emptyText}>No offline reels yet.</Text>
-        <Text style={styles.subText}>Browse Instagram in the Home tab to start downloading!</Text>
+      <View style={[styles.centerContainer, { backgroundColor: palette.background }]}>
+        <Ionicons name="videocam-off-outline" size={44} color={palette.textMuted} />
+        <Text style={[styles.emptyText, { color: palette.text }]}>No offline reels yet</Text>
+        <Text style={[styles.subText, { color: palette.textMuted }]}>
+          Open a reel in the Instagram browser and it will download automatically.
+        </Text>
       </View>
     );
   }
 
-  const handleDeleteReel = (id: string) => {
-    setReels(prev => prev.filter(r => r.id !== id));
-  };
-
   return (
-    <View style={styles.container} onLayout={onContainerLayout}>
-      {/* Floating back button — top left */}
-      <Pressable style={styles.backBtn} onPress={() => router.back()}>
-        <Ionicons name="chevron-back" size={24} color="white" />
-      </Pressable>
+    <View style={[styles.container, { backgroundColor: palette.background }]} onLayout={onContainerLayout}>
       <FlatList
         ref={flatListRef}
-        data={reels}
+        data={visibleReels}
         // Unique keys via id + index to prevent crashes from duplicated IDs in local storage
         keyExtractor={(item, index) => `${item.id}-${index}`}
         renderItem={({ item, index }) => (
           <ReelItem
             item={item}
             isActive={index === activeVideoIndex}
+            isDeleted={deletedIds.has(item.id)}
             itemHeight={itemHeight}
             onDelete={handleDeleteReel}
           />
@@ -187,21 +298,93 @@ export default function OfflineReelsFeed() {
         initialNumToRender={2}
         maxToRenderPerBatch={1}
         removeClippedSubviews={true}
+        keyboardShouldPersistTaps="handled"
         getItemLayout={(data, index) => ({
           length: itemHeight,
           offset: itemHeight * index,
           index,
         })}
+        onScrollToIndexFailed={info => {
+          // getItemLayout should make this impossible, but never leave a blank feed.
+          flatListRef.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: false });
+        }}
         onLayout={onLayoutScroll}
+        ListEmptyComponent={
+          <View style={[styles.centerContainer, { height: itemHeight, backgroundColor: palette.background }]}>
+            <Text style={[styles.emptyText, { color: palette.text }]}>No matches</Text>
+            <Text style={[styles.subText, { color: palette.textMuted }]}>
+              Nothing matches “{query.trim()}”.
+            </Text>
+            <Pressable onPress={closeSearch} style={{ marginTop: 16 }}>
+              <Text style={{ color: palette.accent, fontWeight: '600' }}>Clear search</Text>
+            </Pressable>
+          </View>
+        }
       />
+
+      {/* Feed controls: search, sort, storage usage */}
+      <View style={[styles.toolbar, { top: insets.top + 8 }]} pointerEvents="box-none">
+        {searchOpen ? (
+          <View style={[styles.searchBar, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+            <Ionicons name="search" size={16} color={palette.textMuted} />
+            <TextInput
+              style={[styles.searchInput, { color: palette.text }]}
+              value={query}
+              onChangeText={setQuery}
+              placeholder="Search author, caption or id"
+              placeholderTextColor={palette.textMuted}
+              autoFocus
+              autoCorrect={false}
+              autoCapitalize="none"
+              returnKeyType="search"
+            />
+            <Pressable onPress={closeSearch} hitSlop={10} accessibilityLabel="Close search">
+              <Ionicons name="close-circle" size={18} color={palette.textMuted} />
+            </Pressable>
+          </View>
+        ) : (
+          <>
+            <Pressable
+              onPress={() => setSearchOpen(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Search offline reels"
+              style={[styles.controlButton, { backgroundColor: palette.surface, borderColor: palette.border }]}
+            >
+              <Ionicons name="search" size={18} color={palette.text} />
+            </Pressable>
+
+            <Pressable
+              onPress={cycleSort}
+              accessibilityRole="button"
+              accessibilityLabel={`Sort by ${SORT_LABEL[sort]}. Tap to change.`}
+              style={[styles.sortChip, { backgroundColor: palette.surface, borderColor: palette.border }]}
+            >
+              <Ionicons name="swap-vertical" size={14} color={palette.textMuted} />
+              <Text style={[styles.sortText, { color: palette.text }]}>{SORT_LABEL[sort]}</Text>
+            </Pressable>
+
+            <View style={[styles.storagePill, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+              <Text style={[styles.storageText, { color: palette.textMuted }]}>
+                {visibleReels.length}/{reels.length} · {formatBytes(libraryBytes)}
+              </Text>
+            </View>
+          </>
+        )}
+      </View>
     </View>
   );
 }
 
 // ── expo-video based ReelItem ──────────────────────────────────────────────
-const ReelItem = React.memo(({ item, isActive, itemHeight, onDelete }: { item: ReelData; isActive: boolean; itemHeight: number; onDelete: (id: string) => void }) => {
+const ReelItem = React.memo(function ReelItem({ item, isActive, isDeleted, itemHeight, onDelete }: {
+  item: ReelData;
+  isActive: boolean;
+  isDeleted: boolean;
+  itemHeight: number;
+  onDelete: (id: string) => void;
+}) {
+  const palette = usePalette();
   const [isSavedLocally, setIsSavedLocally] = useState<boolean>(item.isSaved || false);
-  const [isDeleted, setIsDeleted] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
 
   // expo-video player — created once per item
@@ -211,41 +394,37 @@ const ReelItem = React.memo(({ item, isActive, itemHeight, onDelete }: { item: R
     p.volume = 1;
   });
 
-  // Play/pause when visibility changes
+  // Play/pause when visibility changes. A deleted reel has no file to play.
   useEffect(() => {
+    if (isDeleted) {
+      player.pause();
+      return;
+    }
     if (isActive) {
       player.play();
     } else {
       player.pause();
       player.currentTime = 0;
     }
-  }, [isActive, player]);
+  }, [isActive, isDeleted, player]);
 
   // Handle app backgrounding
   useEffect(() => {
     const sub = AppState.addEventListener('change', state => {
+      if (isDeleted) return;
       if (state === 'active' && isActive) player.play();
       else player.pause();
     });
     return () => sub.remove();
-  }, [isActive, player]);
+  }, [isActive, isDeleted, player]);
 
   // Mute toggle
   useEffect(() => {
     player.muted = isMuted;
   }, [isMuted, player]);
 
-  // Listen for auto-delete events
-  useEffect(() => {
-    const handleDeleted = (deletedId: string) => {
-      if (deletedId === item.id) setIsDeleted(true);
-    };
-    DownloadEvents.on('delete', handleDeleted);
-    return () => DownloadEvents.off('delete', handleDeleted);
-  }, [item.id]);
-
   const handleToggleSave = async () => {
-    const updated: any = await DownloadService.toggleSaveReel(item.id);
+    const updated = await DownloadService.toggleSaveReel(item.id);
     if (updated) setIsSavedLocally(updated.isSaved || false);
   };
 
@@ -264,14 +443,61 @@ const ReelItem = React.memo(({ item, isActive, itemHeight, onDelete }: { item: R
     ]);
   };
 
+  // Real gallery save: writes the file into the device photo library.
   const handleSaveToGallery = async () => {
     try {
-      const isAvailable = await Sharing.isAvailableAsync();
-      if (!isAvailable) { Alert.alert('Not Available', 'Sharing not available.'); return; }
-      await Sharing.shareAsync(item.localUri, { mimeType: 'video/mp4', dialogTitle: 'Save to gallery', UTI: 'public.movie' });
+      const permission = await MediaLibrary.requestPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert(
+          'Permission needed',
+          'Allow photo library access to save reels to your gallery.'
+        );
+        return;
+      }
+      await MediaLibrary.Asset.create(item.localUri);
+      Alert.alert('Saved to gallery', 'The reel is now in your photo library.');
     } catch (e: any) {
-      Alert.alert('Error', 'Could not share: ' + e.message);
+      Alert.alert('Could not save', e?.message ?? 'Unknown error while saving to the gallery.');
     }
+  };
+
+  const handleShare = () => {
+    Alert.alert('Share reel', item.originalUrl, [
+      {
+        text: 'Copy link',
+        onPress: async () => {
+          await Clipboard.setStringAsync(item.originalUrl);
+          Alert.alert('Link copied');
+        },
+      },
+      {
+        text: 'Open in Instagram',
+        onPress: () => {
+          Linking.openURL(item.originalUrl).catch(() =>
+            Alert.alert('Could not open Instagram')
+          );
+        },
+      },
+      {
+        text: 'Share video file',
+        onPress: async () => {
+          try {
+            if (!(await Sharing.isAvailableAsync())) {
+              Alert.alert('Sharing not available on this device');
+              return;
+            }
+            await Sharing.shareAsync(item.localUri, {
+              mimeType: 'video/mp4',
+              dialogTitle: 'Share reel',
+              UTI: 'public.movie',
+            });
+          } catch (e: any) {
+            Alert.alert('Could not share', e?.message ?? 'Unknown error');
+          }
+        },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
   };
 
   if (isDeleted) {
@@ -282,6 +508,8 @@ const ReelItem = React.memo(({ item, isActive, itemHeight, onDelete }: { item: R
       </View>
     );
   }
+
+  const title = item.author ? `@${item.author}` : item.id;
 
   return (
     <Pressable style={[styles.reelContainer, { height: itemHeight }]} onPress={() => setIsMuted(m => !m)}>
@@ -299,21 +527,56 @@ const ReelItem = React.memo(({ item, isActive, itemHeight, onDelete }: { item: R
       )}
 
       <View style={styles.bottomOverlay}>
-        <Text style={styles.captionText} numberOfLines={2}>
-          Downloaded: {new Date(item.timestamp).toLocaleDateString()}
+        <Text style={styles.captionText} numberOfLines={1}>{title}</Text>
+        {!!item.caption && (
+          <Text style={styles.captionText} numberOfLines={2}>{item.caption}</Text>
+        )}
+        <Text style={styles.metaText}>
+          {formatDate(item.timestamp)} · {formatBytes(item.sizeBytes)}
+          {item.isSaved ? ' · Saved' : ''}
         </Text>
       </View>
 
       <View style={styles.rightActionsRow}>
-        <Pressable style={styles.actionItem} onPress={handleToggleSave}>
-          <Ionicons name={isSavedLocally ? 'bookmark' : 'bookmark-outline'} size={30} color={isSavedLocally ? '#FFD700' : 'white'} />
-          <Text style={[styles.actionText, isSavedLocally && { color: '#FFD700' }]}>{isSavedLocally ? 'Saved' : 'Save'}</Text>
+        <Pressable
+          style={styles.actionItem}
+          onPress={handleToggleSave}
+          accessibilityRole="button"
+          accessibilityLabel={isSavedLocally ? 'Remove from saved' : 'Save reel'}
+        >
+          <Ionicons
+            name={isSavedLocally ? 'bookmark' : 'bookmark-outline'}
+            size={30}
+            color={isSavedLocally ? palette.gold : 'white'}
+          />
+          <Text style={[styles.actionText, isSavedLocally && { color: palette.gold }]}>
+            {isSavedLocally ? 'Saved' : 'Save'}
+          </Text>
         </Pressable>
-        <Pressable style={styles.actionItem} onPress={handleSaveToGallery}>
+        <Pressable
+          style={styles.actionItem}
+          onPress={handleSaveToGallery}
+          accessibilityRole="button"
+          accessibilityLabel="Save reel to gallery"
+        >
           <Ionicons name="download-outline" size={30} color="white" />
           <Text style={styles.actionText}>Gallery</Text>
         </Pressable>
-        <Pressable style={styles.actionItem} onPress={handleDelete}>
+        <Pressable
+          style={styles.actionItem}
+          onPress={handleShare}
+          accessibilityRole="button"
+          accessibilityLabel="Share or copy reel link"
+        >
+          <Ionicons name="share-social-outline" size={30} color="white" />
+          <Text style={styles.actionText}>Share</Text>
+        </Pressable>
+        <Pressable
+          style={styles.actionItem}
+          onPress={handleDelete}
+          accessibilityRole="button"
+          accessibilityLabel="Delete reel"
+        >
           <Ionicons name="trash-outline" size={30} color="#ff4444" />
           <Text style={[styles.actionText, { color: '#ff4444' }]}>Delete</Text>
         </Pressable>
@@ -322,29 +585,84 @@ const ReelItem = React.memo(({ item, isActive, itemHeight, onDelete }: { item: R
   );
 });
 
-
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: 'black', // Standard for reels view
   },
   centerContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#111',
-    padding: 20,
+    padding: 24,
   },
   emptyText: {
-    color: 'white',
     fontSize: 18,
     fontWeight: 'bold',
-    marginBottom: 10,
+    marginTop: 12,
   },
   subText: {
-    color: '#888',
     fontSize: 14,
     textAlign: 'center',
+    marginTop: 8,
+    lineHeight: 20,
+  },
+  toolbar: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    zIndex: 50,
+  },
+  controlButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sortChip: {
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  sortText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  storagePill: {
+    marginLeft: 'auto',
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  storageText: {
+    fontSize: 11,
+    fontVariant: ['tabular-nums'],
+  },
+  searchBar: {
+    flex: 1,
+    height: 40,
+    borderRadius: 20,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    padding: 0,
   },
   reelContainer: {
     width: windowWidth,
@@ -366,55 +684,30 @@ const styles = StyleSheet.create({
     position: 'absolute',
     bottom: 0,
     left: 0,
-    right: 0,
+    right: 90,
     padding: 15,
     paddingBottom: 25,
     backgroundColor: 'rgba(0,0,0,0.3)', // Fades text into view
   },
-  userInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  avatarPlaceholder: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#ff5a5f',
-    marginRight: 10,
-  },
-  usernameText: {
-    color: 'white',
-    fontWeight: 'bold',
-    fontSize: 16,
-    marginRight: 10,
-  },
-  followButton: {
-    borderColor: 'white',
-    borderWidth: 1,
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  followText: {
-    color: 'white',
-    fontSize: 12,
-    fontWeight: '600',
-  },
   captionText: {
     color: 'white',
     fontSize: 14,
+    fontWeight: '600',
     marginBottom: 4,
+  },
+  metaText: {
+    color: 'rgba(255,255,255,0.7)',
+    fontSize: 12,
   },
   rightActionsRow: {
     position: 'absolute',
-    bottom: 30,
-    right: 15,
+    bottom: 24,
+    right: 12,
     alignItems: 'center',
   },
   actionItem: {
     alignItems: 'center',
-    marginBottom: 20,
+    marginBottom: 18,
   },
   actionText: {
     color: 'white',
@@ -425,17 +718,5 @@ const styles = StyleSheet.create({
     color: '#888',
     fontSize: 14,
     marginTop: 15,
-  },
-  backBtn: {
-    position: 'absolute',
-    top: 50,
-    left: 12,
-    zIndex: 50,
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    justifyContent: 'center',
-    alignItems: 'center',
   },
 });

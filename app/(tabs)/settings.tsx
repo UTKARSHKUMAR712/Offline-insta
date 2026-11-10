@@ -1,31 +1,61 @@
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, View, Text, Switch, SafeAreaView, ActivityIndicator, Pressable, Alert } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  View,
+} from 'react-native';
 import { WebView } from 'react-native-webview';
-import { useRouter } from 'expo-router';
-import { DownloadService } from '../../services/download';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-// A small hidden WebView that we clear to log out Instagram.
-// We only show it briefly, then navigate back.
-let logoutWebViewRef: any = null;
+import { usePalette } from '../../hooks/use-palette';
+import { DownloadService, type LibraryStats } from '../../services/download';
+import { formatBytes } from '../../utils/format';
+
+const EMPTY_STATS: LibraryStats = { count: 0, savedCount: 0, bytes: 0 };
 
 export default function SettingsScreen() {
   const router = useRouter();
+  const palette = usePalette();
+  const insets = useSafeAreaInsets();
   const [autoDelete, setAutoDelete] = useState(false);
   const [pauseDownloads, setPauseDownloads] = useState(false);
+  const [stats, setStats] = useState<LibraryStats>(EMPTY_STATS);
   const [loading, setLoading] = useState(true);
   const [showLogoutView, setShowLogoutView] = useState(false);
 
   useEffect(() => {
     const loadSettings = async () => {
-      const adEnabled = await DownloadService.getAutoDeleteEnabled();
-      const pdEnabled = await DownloadService.getDownloadsPaused();
+      const [adEnabled, pdEnabled] = await Promise.all([
+        DownloadService.getAutoDeleteEnabled(),
+        DownloadService.getDownloadsPaused(),
+      ]);
       setAutoDelete(adEnabled);
       setPauseDownloads(pdEnabled);
       setLoading(false);
     };
-    loadSettings();
+    loadSettings().catch(() => setLoading(false));
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      let isActive = true;
+      DownloadService.getLibraryStats()
+        .then(next => {
+          if (isActive) setStats(next);
+        })
+        .catch(() => {});
+      return () => {
+        isActive = false;
+      };
+    }, [])
+  );
 
   const toggleAutoDelete = async (value: boolean) => {
     setAutoDelete(value);
@@ -54,70 +84,81 @@ export default function SettingsScreen() {
 
   if (loading) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator color="white" />
+      <View style={[styles.center, { backgroundColor: palette.background }]}>
+        <ActivityIndicator color={palette.textMuted} />
       </View>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container}>
-      {/* Back Button */}
-      <Pressable style={styles.backBtn} onPress={() => router.back()}>
-        <Ionicons name="chevron-back" size={22} color="white" />
-        <Text style={styles.backText}>Home</Text>
-      </Pressable>
-      {/* Auto-Delete Setting */}
-      <View style={styles.settingRow}>
-        <View style={styles.textContainer}>
-          <Text style={styles.title}>Auto-Delete Offline Reels</Text>
-          <Text style={styles.description}>
-            Automatically permanently delete reels as soon as you swipe past them in the Offline Reels feed. Saved reels will not be deleted.
-          </Text>
-        </View>
-        <Switch
-          trackColor={{ false: '#3e3e3e', true: '#FFD700' }}
-          thumbColor="#f4f3f4"
-          ios_backgroundColor="#3e3e3e"
-          onValueChange={toggleAutoDelete}
+    <View style={[styles.container, { backgroundColor: palette.background }]}>
+      <ScrollView
+        contentContainerStyle={{
+          paddingTop: insets.top + 24,
+          paddingBottom: insets.bottom + 32,
+          paddingHorizontal: 20,
+        }}
+        showsVerticalScrollIndicator={false}
+      >
+        <Text style={[styles.title, { color: palette.text }]}>Settings</Text>
+
+        {/* Library summary */}
+        <Pressable
+          onPress={() => router.push('/explore')}
+          accessibilityRole="button"
+          accessibilityLabel="Open offline reels"
+          style={[styles.storageCard, { backgroundColor: palette.surface, borderColor: palette.border }]}
+        >
+          <View style={[styles.storageIcon, { backgroundColor: palette.surfaceAlt }]}>
+            <Ionicons name="folder-open-outline" size={20} color={palette.accent} />
+          </View>
+          <View style={styles.storageText}>
+            <Text style={[styles.storageTitle, { color: palette.text }]}>
+              {formatBytes(stats.bytes)} used
+            </Text>
+            <Text style={[styles.storageMeta, { color: palette.textMuted }]}>
+              {stats.count} {stats.count === 1 ? 'reel' : 'reels'} · {stats.savedCount} saved
+            </Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={palette.textMuted} />
+        </Pressable>
+
+        <SettingRow
+          title="Auto-Delete Offline Reels"
+          description="Delete reels automatically once you swipe past them in the offline feed. Saved reels are never deleted."
           value={autoDelete}
+          onValueChange={toggleAutoDelete}
         />
-      </View>
 
-      {/* Pause Downloads Setting */}
-      <View style={styles.settingRow}>
-        <View style={styles.textContainer}>
-          <Text style={styles.title}>Pause Automatic Downloads</Text>
-          <Text style={styles.description}>
-            When enabled, the app will stop automatically fetching and downloading reels from Instagram pages.
-          </Text>
-        </View>
-        <Switch
-          trackColor={{ false: '#3e3e3e', true: '#FFD700' }}
-          thumbColor="#f4f3f4"
-          ios_backgroundColor="#3e3e3e"
-          onValueChange={togglePauseDownloads}
+        <SettingRow
+          title="Pause Automatic Downloads"
+          description="Reels you open in the Instagram browser stop downloading automatically. Links you paste into a downloader still work."
           value={pauseDownloads}
+          onValueChange={togglePauseDownloads}
         />
-      </View>
 
-      {/* Instagram Logout */}
-      <Pressable style={styles.logoutRow} onPress={handleLogout}>
-        <Text style={styles.logoutTitle}>Log Out of Instagram</Text>
-        <Text style={styles.description}>
-          Clears your Instagram session cookies from this app. You will need to log in again next time.
-        </Text>
-      </Pressable>
+        <Pressable
+          onPress={handleLogout}
+          accessibilityRole="button"
+          accessibilityLabel="Log out of Instagram"
+          style={[styles.logoutRow, { borderColor: palette.danger, backgroundColor: palette.surface }]}
+        >
+          <Text style={[styles.logoutTitle, { color: palette.danger }]}>Log Out of Instagram</Text>
+          <Text style={[styles.description, { color: palette.textMuted }]}>
+            Clears your Instagram session cookies from this app. You will need to log in again next
+            time.
+          </Text>
+        </Pressable>
+      </ScrollView>
 
       {/* Hidden WebView used purely to clear Instagram cookies by loading the logout URL */}
       {showLogoutView && (
         <View style={{ height: 0, overflow: 'hidden' }}>
           <WebView
-            ref={(ref) => { logoutWebViewRef = ref; }}
             source={{ uri: 'https://www.instagram.com/accounts/logout/' }}
             // This is a standard web navigation to Instagram's own logout page.
             // No JS is injected. Instagram itself handles the session clear.
-            onNavigationStateChange={(state) => {
+            onNavigationStateChange={state => {
               // Once Instagram redirects us away from the logout page, we're done.
               if (state.url && !state.loading) {
                 setShowLogoutView(false);
@@ -131,70 +172,79 @@ export default function SettingsScreen() {
           />
         </View>
       )}
-    </SafeAreaView>
+    </View>
+  );
+}
+
+function SettingRow({
+  title,
+  description,
+  value,
+  onValueChange,
+}: {
+  title: string;
+  description: string;
+  value: boolean;
+  onValueChange: (next: boolean) => void;
+}) {
+  const palette = usePalette();
+  return (
+    <View style={[styles.settingRow, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+      <View style={styles.textContainer}>
+        <Text style={[styles.rowTitle, { color: palette.text }]}>{title}</Text>
+        <Text style={[styles.description, { color: palette.textMuted }]}>{description}</Text>
+      </View>
+      <Switch
+        trackColor={{ false: palette.surfaceAlt, true: palette.accent }}
+        thumbColor="#f4f3f4"
+        ios_backgroundColor={palette.surfaceAlt}
+        onValueChange={onValueChange}
+        value={value}
+      />
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#111',
-    padding: 20,
-  },
-  center: {
-    flex: 1,
-    backgroundColor: '#111',
-    justifyContent: 'center',
+  container: { flex: 1 },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  title: { fontSize: 32, fontWeight: '700', letterSpacing: -0.5, marginBottom: 20 },
+  storageCard: {
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 12,
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 16,
   },
+  storageIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  storageText: { flex: 1 },
+  storageTitle: { fontSize: 16, fontWeight: '600' },
+  storageMeta: { fontSize: 12, marginTop: 2 },
   settingRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: '#222',
-    padding: 20,
-    borderRadius: 12,
-    marginTop: 20,
-  },
-  logoutRow: {
-    backgroundColor: '#1a0a0a',
     borderWidth: 1,
-    borderColor: '#441111',
-    padding: 20,
-    borderRadius: 12,
-    marginTop: 16,
-    width: '100%',
+    padding: 16,
+    borderRadius: 16,
+    marginTop: 12,
+    gap: 12,
   },
-  logoutTitle: {
-    color: '#ff4444',
-    fontSize: 16,
-    fontWeight: 'bold',
-    marginBottom: 8,
+  textContainer: { flex: 1 },
+  rowTitle: { fontSize: 15, fontWeight: '600', marginBottom: 6 },
+  description: { fontSize: 12, lineHeight: 17 },
+  logoutRow: {
+    borderWidth: 1,
+    padding: 16,
+    borderRadius: 16,
+    marginTop: 24,
   },
-  textContainer: {
-    flex: 1,
-    paddingRight: 10,
-  },
-  title: {
-    color: 'white',
-    fontSize: 16,
-    fontWeight: 'bold',
-    marginBottom: 8,
-  },
-  description: {
-    color: '#aaa',
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  backBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 10,
-    paddingVertical: 8,
-  },
-  backText: {
-    color: 'white',
-    fontSize: 16,
-    marginLeft: 4,
-  },
+  logoutTitle: { fontSize: 15, fontWeight: '700', marginBottom: 6 },
 });

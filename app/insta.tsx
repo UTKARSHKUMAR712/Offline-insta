@@ -1,38 +1,48 @@
-import { StyleSheet, View, Text, TextInput, Modal, Pressable, KeyboardAvoidingView, Platform } from 'react-native';
+import { StyleSheet, View, Text, TextInput, Modal, Pressable, KeyboardAvoidingView, Platform, Alert } from 'react-native';
 import { WebView } from 'react-native-webview';
-import { useState, useRef, useEffect } from 'react';
-import { DownloadService, DownloadEvents } from '../../services/download';
+import { useState, useRef, type ComponentRef } from 'react';
+import { DownloadService, DownloadEvents } from '../services/download';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
-import { DownloadProgressOverlay } from '../../components/DownloadProgressOverlay';
+import { describeApiError, isInstagramUrl, parseInstagramUrl } from '../services/api';
 
 export default function HomeScreen() {
-  const webViewRef = useRef<WebView>(null);
+  const webViewRef = useRef<ComponentRef<typeof WebView>>(null);
 
   // Track the URL currently open in the WebView
   const [currentUrl, setCurrentUrl] = useState('');
+  // Last reel we already queued, so SPA navigations don't queue it repeatedly
+  const lastHandledRef = useRef<string | null>(null);
 
   // State for the manual URL input modal
   const [modalVisible, setModalVisible] = useState(false);
   const [inputUrl, setInputUrl] = useState('');
   const [isDownloading, setIsDownloading] = useState(false);
 
-  // onNavigationStateChange: fires on full page navigations only
-  const onNavigationStateChange = async (navState: any) => {
-    const url: string = navState.url || '';
-    // Always track the current page URL
-    if (url && url.startsWith('http')) {
-      setCurrentUrl(url);
+  const handleDetectedUrl = async (url: string) => {
+    if (!url || !url.startsWith('http')) return;
+    setCurrentUrl(url);
+
+    const target = parseInstagramUrl(url);
+    if (!target) return; // feeds, profiles, explore, stories, audio pages…
+    if (lastHandledRef.current === target.shortcode) return;
+
+    lastHandledRef.current = target.shortcode;
+    DownloadEvents.emit('log', '>> Reel detected, downloading...');
+    try {
+      await DownloadService.downloadReel(url);
+    } catch (e: any) {
+      // Automatic downloads have no modal open, so report through the overlay.
+      DownloadEvents.emit('log', '>> ' + describeApiError(e));
+      // Allow a later retry if the user reopens this reel.
+      lastHandledRef.current = null;
     }
-    const lowerUrl = url.toLowerCase();
-    if (lowerUrl.includes('/reel/') || lowerUrl.includes('/reels/') || lowerUrl.includes('/p/')) {
-      DownloadEvents.emit('log', '>> Reel detected, downloading...');
-      try {
-        await DownloadService.downloadReel(url);
-      } catch (e: any) {
-        DownloadEvents.emit('log', '>> Error: ' + e.message);
-      }
-    }
+  };
+
+  // Fires on full page navigations only; SPA navigations are caught by the
+  // history patch injected below.
+  const onNavigationStateChange = (navState: any) => {
+    void handleDetectedUrl(navState.url || '');
   };
 
   /**
@@ -55,6 +65,25 @@ export default function HomeScreen() {
           return _origWrite ? _origWrite(text) : Promise.resolve();
         };
       }
+      // Instagram is a SPA: onNavigationStateChange does not fire for its
+      // client-side route changes, so report the URL ourselves.
+      try {
+        var notify = function() {
+          window.ReactNativeWebView.postMessage(JSON.stringify({
+            type: 'URL_CHANGE',
+            url: location.href
+          }));
+        };
+        ['pushState', 'replaceState'].forEach(function(method) {
+          var original = history[method];
+          history[method] = function() {
+            var result = original.apply(this, arguments);
+            notify();
+            return result;
+          };
+        });
+        window.addEventListener('popstate', notify);
+      } catch (e) {}
     })();
     true;
   `;
@@ -62,6 +91,10 @@ export default function HomeScreen() {
   const onMessage = async (event: any) => {
     try {
       const data = JSON.parse(event.nativeEvent.data || '{}');
+      if (data.type === 'URL_CHANGE' && data.url) {
+        void handleDetectedUrl(data.url);
+        return;
+      }
       if (data.type === 'CLIPBOARD_WRITE' && data.text) {
         // Write to the real Android system clipboard
         await Clipboard.setStringAsync(data.text);
@@ -79,9 +112,9 @@ export default function HomeScreen() {
     const url = inputUrl.trim();
     if (!url) return;
 
-    const lowerUrl = url.toLowerCase();
-    if (!lowerUrl.includes('instagram.com')) {
-      DownloadEvents.emit('log', '>> Invalid URL (not Instagram)');
+    if (!isInstagramUrl(url) || !parseInstagramUrl(url)) {
+      DownloadEvents.emit('log', '>> Invalid URL (not an Instagram reel/post)');
+      Alert.alert('Invalid link', 'Paste an Instagram reel or post link, for example https://www.instagram.com/reel/…');
       return;
     }
 
@@ -91,11 +124,13 @@ export default function HomeScreen() {
 
     DownloadEvents.emit('log', '>> Manual download started...');
     try {
-      await DownloadService.downloadReel(url);
+      // Resolves only once the file is on disk (or was already saved).
+      await DownloadService.downloadReel(url, { source: 'manual' });
     } catch (e: any) {
-      DownloadEvents.emit('log', '>> Error: ' + e.message);
+      Alert.alert('Download failed', describeApiError(e));
+    } finally {
+      setIsDownloading(false);
     }
-    setIsDownloading(false);
   };
 
   return (
@@ -112,14 +147,13 @@ export default function HomeScreen() {
         mediaPlaybackRequiresUserAction={false}
       />
 
-      <DownloadProgressOverlay />
-
       {/* Floating download button — left side, semi-transparent */}
       <Pressable
         style={styles.floatingBtn}
         onPress={() => {
-          // Pre-fill with current page URL so user doesn't need to paste
-          setInputUrl(currentUrl);
+          // Pre-fill only when the current page is a reel/post, otherwise the
+          // user would have to clear a feed URL every time.
+          setInputUrl(parseInstagramUrl(currentUrl) ? currentUrl : '');
           setModalVisible(true);
         }}
       >
@@ -156,8 +190,12 @@ export default function HomeScreen() {
               <Pressable style={styles.cancelBtn} onPress={() => { setModalVisible(false); setInputUrl(''); }}>
                 <Text style={styles.cancelText}>Cancel</Text>
               </Pressable>
-              <Pressable style={[styles.downloadBtn, !inputUrl.trim() && { opacity: 0.4 }]} onPress={handleManualDownload} disabled={!inputUrl.trim()}>
-                <Text style={styles.downloadText}>Download</Text>
+              <Pressable
+                style={[styles.downloadBtn, (!inputUrl.trim() || isDownloading) && { opacity: 0.4 }]}
+                onPress={handleManualDownload}
+                disabled={!inputUrl.trim() || isDownloading}
+              >
+                <Text style={styles.downloadText}>{isDownloading ? 'Downloading…' : 'Download'}</Text>
               </Pressable>
             </View>
           </View>
