@@ -130,7 +130,7 @@ export default function SettingsScreen() {
 
         <SettingRow
           title="Auto-Scroll Reels"
-          description="Advance to the next reel every 2–4 seconds in the Instagram browser, downloading each one on the way. Pauses while a download is running and stops if the feed does not move."
+          description="Advance to the next reel every 7–20 seconds in the Instagram browser, downloading each one on the way. Pauses while a download is running and stops if the feed does not move."
           value={autoScroll}
           onValueChange={toggleAutoScroll}
         />

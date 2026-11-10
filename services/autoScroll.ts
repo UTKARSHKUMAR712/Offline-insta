@@ -4,8 +4,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 export const SETTINGS_AUTO_SCROLL_KEY = '@settings_auto_scroll_reels';
 
 /** Randomized dwell window per step. */
-export const AUTO_SCROLL_MIN_DELAY_MS = 2000;
-export const AUTO_SCROLL_MAX_DELAY_MS = 4000;
+export const AUTO_SCROLL_MIN_DELAY_MS = 7000;
+export const AUTO_SCROLL_MAX_DELAY_MS = 20000;
 
 /** Consecutive steps that do not move the feed before the loop gives up. */
 export const AUTO_SCROLL_MAX_STALLS = 4;
@@ -16,6 +16,8 @@ export type AutoScrollResult = {
   reason: string;
   count: number;
   index: number;
+  /** Permalink of the reel on screen, read from the DOM. Empty when absent. */
+  href: string;
   url: string;
 };
 
@@ -53,12 +55,33 @@ export function nextAutoScrollDelay(random: () => number = Math.random): number 
  *  - layouts that mount a single reel (mobile web) have no next sibling, so the
  *    nearest scrollable ancestor is scrolled by one viewport instead;
  *  - an open comments panel pauses stepping, as in the original extension.
+ *
+ * Each step also reports the on-screen reel's permalink. The app downloads from
+ * that link instead of waiting for a URL change, because a programmatic scroll
+ * does not reliably move Instagram's address bar — which is why auto-scroll used
+ * to advance without saving anything.
  */
 export const AUTO_SCROLL_SCRIPT = `
 (function () {
   if (window.__igReelScroller) return;
   var VIDEO_SELECTOR = 'main video';
   var COMMENTS_SELECTOR = '.BasePortal span';
+  // /reel/<id>/ /reels/<id>/ /p/<id>/ /tv/<id>/ with or without a username
+  // prefix. Deliberately does not match the /reels/ feed, /reels/audio/<n> or
+  // /<user>/reels/ (a profile tab), which have no shortcode in the right place.
+  var PERMALINK_KINDS = { reel: 1, reels: 1, p: 1, tv: 1 };
+
+  function permalinkPath(pathname) {
+    var parts = (pathname || '').split('/').filter(function (part) {
+      return part.length > 0;
+    });
+    if (parts.length < 2) return '';
+    var kind = parts[parts.length - 2].toLowerCase();
+    var id = parts[parts.length - 1];
+    if (!PERMALINK_KINDS[kind]) return '';
+    if (!/^[A-Za-z0-9_-]{8,15}$/.test(id)) return '';
+    return '/' + kind + '/' + id + '/';
+  }
 
   function viewport() {
     return {
@@ -123,6 +146,30 @@ export const AUTO_SCROLL_SCRIPT = `
     return document.scrollingElement || document.body;
   }
 
+  function permalinkFor(el) {
+    // Reel links usually sit on the card around the video, a few levels up.
+    var node = el ? el.parentElement : null;
+    for (var depth = 0; node && depth < 10; depth++) {
+      var links = node.querySelectorAll ? node.querySelectorAll('a[href]') : [];
+      for (var i = 0; i < links.length; i++) {
+        var raw = links[i].getAttribute('href') || '';
+        var url;
+        try {
+          url = new URL(raw, location.origin);
+        } catch (e) {
+          continue;
+        }
+        if (permalinkPath(url.pathname)) return url.origin + permalinkPath(url.pathname);
+      }
+      node = node.parentElement;
+    }
+    // Fallback: a URL Instagram already moved to.
+    try {
+      if (permalinkPath(location.pathname)) return location.origin + permalinkPath(location.pathname);
+    } catch (e) {}
+    return '';
+  }
+
   function report(result) {
     try {
       window.ReactNativeWebView.postMessage(JSON.stringify(result));
@@ -137,6 +184,7 @@ export const AUTO_SCROLL_SCRIPT = `
       reason: '',
       count: list.length,
       index: -1,
+      href: list.length ? permalinkFor(list[0]) : '',
       url: location.href
     };
 
@@ -154,6 +202,7 @@ export const AUTO_SCROLL_SCRIPT = `
 
     var index = currentIndex(list);
     result.index = index;
+    result.href = permalinkFor(list[Math.max(index, 0)]);
 
     if (index >= 0 && index + 1 < list.length) {
       list[index + 1].scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
@@ -198,6 +247,7 @@ export const AUTO_SCROLL_STEP_SCRIPT = `
         reason: 'not-ready',
         count: 0,
         index: -1,
+        href: '',
         url: location.href
       }));
     } catch (e) {}

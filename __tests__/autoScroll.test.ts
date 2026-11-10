@@ -29,7 +29,7 @@ describe('auto-scroll setting', () => {
 });
 
 describe('nextAutoScrollDelay', () => {
-  it('stays inside the 2-4s window', () => {
+  it('stays inside the 7-20s window', () => {
     expect(nextAutoScrollDelay(() => 0)).toBe(AUTO_SCROLL_MIN_DELAY_MS);
     expect(nextAutoScrollDelay(() => 1)).toBe(AUTO_SCROLL_MAX_DELAY_MS);
 

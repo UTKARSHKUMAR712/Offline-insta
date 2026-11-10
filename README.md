@@ -103,14 +103,18 @@ URL carries one), byte size and media type, and older entries are migrated on fi
 
 ### Auto-scroll
 
-Settings → *Auto-Scroll Reels* advances the Instagram feed every 2–4 seconds, so a browsing
-session downloads reel after reel without touching the screen. The page script finds the reel
-that is fully inside the viewport by geometry and calls `scrollIntoView()` on the next `<video>`
-(the approach proven by
+Settings → *Auto-Scroll Reels* advances the Instagram feed at a random 7–20 seconds per reel, so
+a browsing session downloads reel after reel without touching the screen. The page script finds
+the reel that is fully inside the viewport by geometry and calls `scrollIntoView()` on the next
+`<video>` (the approach proven by
 [Auto-Reels-Scroller](https://github.com/Tyson3101/Auto-Reels-Scroller)); when only one reel is
-mounted it scrolls the nearest scrollable container by one viewport instead. React Native owns
-the clock, so a step is skipped while a download is in flight, an open comments panel pauses it,
-and four non-advancing steps stop it for the session.
+mounted it scrolls the nearest scrollable container by one viewport instead.
+
+Each step also reports the on-screen reel's permalink read from the DOM, and the app downloads
+from that link. Waiting for Instagram's address bar to change does not work here: a programmatic
+scroll moves the feed without reliably updating the URL, so the feed advanced while nothing was
+saved. React Native owns the clock, so a step is skipped while a download is in flight, an open
+comments panel pauses it, and four steps that do not reach a new reel stop it for the session.
 
 ## Extractor API contract
 

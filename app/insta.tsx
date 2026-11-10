@@ -33,7 +33,8 @@ export default function HomeScreen() {
   const [autoScrollActive, setAutoScrollActive] = useState(false);
   const downloadsInFlightRef = useRef(0);
   const autoScrollStallsRef = useRef(0);
-  const autoScrollLastUrlRef = useRef('');
+  // Shortcode of the reel the loop last saw, used to tell "advanced" from "stuck".
+  const autoScrollLastShortcodeRef = useRef('');
 
   // Re-read the setting on focus: it is toggled from the Settings tab.
   useFocusEffect(
@@ -128,15 +129,21 @@ export default function HomeScreen() {
    * retrying forever would just burn battery and requests.
    */
   const handleAutoScrollResult = (result: AutoScrollResult) => {
-    if (result.ok) {
-      if (result.url && result.url !== autoScrollLastUrlRef.current) {
-        autoScrollLastUrlRef.current = result.url;
+    // An open comments panel is transient: the reel under it is not changing.
+    if (result.reason === 'comments-open') return;
+
+    // Download from the reel link the page reported rather than waiting for a
+    // URL change, which a programmatic scroll does not reliably produce.
+    const target = parseInstagramUrl(result.href || '') ?? parseInstagramUrl(result.url || '');
+    if (target) {
+      void handleDetectedUrl(target.canonicalUrl);
+      if (target.shortcode !== autoScrollLastShortcodeRef.current) {
+        autoScrollLastShortcodeRef.current = target.shortcode;
         autoScrollStallsRef.current = 0;
       } else {
         autoScrollStallsRef.current += 1;
       }
-    } else if (result.reason !== 'comments-open') {
-      // An open comments panel is transient: keep polling, do not count it.
+    } else {
       autoScrollStallsRef.current += 1;
     }
 
@@ -158,7 +165,7 @@ export default function HomeScreen() {
       let timer: ReturnType<typeof setTimeout> | null = null;
 
       autoScrollStallsRef.current = 0;
-      autoScrollLastUrlRef.current = '';
+      autoScrollLastShortcodeRef.current = '';
 
       function schedule() {
         if (cancelled) return;
