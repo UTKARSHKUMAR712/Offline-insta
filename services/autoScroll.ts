@@ -149,6 +149,20 @@ export const AUTO_SCROLL_SCRIPT = `
       addCode(node.code);
       var owner = node.user || node.owner || null;
       addMedia(node.code, owner ? owner.username : '', captionOf(node));
+      // video_versions is the progressive MP4 (video + audio). Keep its URL so
+      // the download can skip the extractor entirely.
+      var versions = node.video_versions;
+      if (versions) {
+        for (var v = 0; v < versions.length; v++) {
+          var href = versions[v] && versions[v].url;
+          if (typeof href === 'string' && href.indexOf('https://') === 0) {
+            var entry = media[node.code] || {};
+            if (!entry.videoUrl) entry.videoUrl = href;
+            media[node.code] = entry;
+            break;
+          }
+        }
+      }
     }
     for (var key in node) {
       if (Object.prototype.hasOwnProperty.call(node, key)) walk(node[key], depth + 1);

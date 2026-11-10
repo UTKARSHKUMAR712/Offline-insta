@@ -387,6 +387,7 @@ const ReelItem = React.memo(function ReelItem({ item, isActive, isDeleted, itemH
   const [isSavedLocally, setIsSavedLocally] = useState<boolean>(item.isSaved || false);
   const [isMuted, setIsMuted] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const [showControls, setShowControls] = useState(false);
   const [captionExpanded, setCaptionExpanded] = useState(false);
 
   // expo-video player — created once per item
@@ -409,6 +410,18 @@ const ReelItem = React.memo(function ReelItem({ item, isActive, isDeleted, itemH
       if (!isActive) player.currentTime = 0;
     }
   }, [isActive, isDeleted, isPaused, player]);
+
+  // Coming back to a reel in the feed starts it playing again, controls hidden.
+  // Adjusted during render (the React pattern) instead of in an effect, which
+  // would paint one extra frame with the stale controls.
+  const [wasActive, setWasActive] = useState(isActive);
+  if (wasActive !== isActive) {
+    setWasActive(isActive);
+    if (!isActive) {
+      setIsPaused(false);
+      setShowControls(false);
+    }
+  }
 
   // Leaving the tab (or this screen) must stop the audio: the feed stays mounted
   // behind the other tabs, so nothing else would ever pause it.
@@ -436,11 +449,19 @@ const ReelItem = React.memo(function ReelItem({ item, isActive, isDeleted, itemH
     player.muted = isMuted;
   }, [isMuted, player]);
 
+  // Controls stay hidden until tapped: a middle tap pauses and reveals the play
+  // badge with the mute toggle above it, a second tap plays and hides them.
   const togglePlayPause = () => {
     const next = !isPaused;
     setIsPaused(next);
+    setShowControls(next);
     if (next) player.pause();
     else player.play();
+  };
+
+  const toggleMute = () => {
+    setIsMuted(m => !m);
+    setShowControls(true);
   };
 
   const handleToggleSave = async () => {
@@ -546,31 +567,35 @@ const ReelItem = React.memo(function ReelItem({ item, isActive, isDeleted, itemH
         />
       </Pressable>
 
-      {/* Mute above the play button, the way the feed places them. The mute
-          circle sits clear of dead centre so a tap in the middle still
-          plays/pauses instead of muting. */}
-      <View style={styles.centerControls} pointerEvents="box-none">
-        <Pressable
-          onPress={() => setIsMuted(m => !m)}
-          style={[styles.circleButton, styles.mutePosition]}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel={isMuted ? 'Unmute reel' : 'Mute reel'}
-        >
-          <Ionicons name={isMuted ? 'volume-mute' : 'volume-high'} size={18} color="white" />
-        </Pressable>
-        {isPaused && (
+      {/* Hidden until the reel is paused; the mute circle then sits above the
+          play badge, clear of dead centre so the middle stays a play/pause tap. */}
+      {showControls && (
+        <View style={styles.centerControls} pointerEvents="box-none">
+          <Pressable
+            onPress={toggleMute}
+            style={[styles.circleButton, styles.mutePosition]}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={isMuted ? 'Unmute reel' : 'Mute reel'}
+          >
+            <Ionicons name={isMuted ? 'volume-mute' : 'volume-high'} size={18} color="white" />
+          </Pressable>
           <Pressable
             onPress={togglePlayPause}
             style={[styles.playButton, styles.playPosition]}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel="Play reel"
+            accessibilityLabel={isPaused ? 'Play reel' : 'Pause reel'}
           >
-            <Ionicons name="play" size={34} color="white" style={styles.playIcon} />
+            <Ionicons
+              name={isPaused ? 'play' : 'pause'}
+              size={34}
+              color="white"
+              style={isPaused ? styles.playIcon : undefined}
+            />
           </Pressable>
-        )}
-      </View>
+        </View>
+      )}
 
       <View style={styles.bottomOverlay} pointerEvents="box-none">
         <View style={styles.authorRow}>

@@ -7,7 +7,15 @@ import {
 } from 'expo-file-system/legacy';
 
 import { extractHashtags } from '../utils/format';
-import { ApiError, authorFromUrl, describeApiError, extractVideoUrl, parseInstagramUrl } from './api';
+import {
+  ApiError,
+  authorFromUrl,
+  describeApiError,
+  extractVideoUrl,
+  isAllowedVideoUrl,
+  isImageMediaUrl,
+  parseInstagramUrl,
+} from './api';
 import { Catalog } from './catalog';
 import { DownloadEvents } from './events';
 import { SerialQueue } from './queue';
@@ -112,23 +120,42 @@ export class DownloadService {
 
     try {
       this.log(`⬇ Starting: ${postId}`);
-      const { videoUrl } = await extractVideoUrl(originalUrl);
+      // The feed already handed us Instagram's own progressive MP4, which has an
+      // audio track; the extractor is only needed when we have no fresh URL.
+      const feedUrl = job.metadata?.videoUrl;
+      let videoUrl: string;
+      if (feedUrl && isAllowedVideoUrl(feedUrl) && !isImageMediaUrl(feedUrl)) {
+        videoUrl = feedUrl;
+        this.log(`↪ Using the feed's own video URL: ${postId}`);
+      } else {
+        videoUrl = (await extractVideoUrl(originalUrl)).videoUrl;
+      }
 
       let lastPercentage = -1;
-      const resumable = createDownloadResumable(videoUrl, localUri, {}, ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
-        if (!totalBytesExpectedToWrite || totalBytesExpectedToWrite <= 0) return;
-        const percentage = Math.min(
-          100,
-          Math.round((totalBytesWritten / totalBytesExpectedToWrite) * 100)
-        );
-        // Only notify on change — the native callback fires far more often
-        // than the UI needs to re-render.
-        if (percentage === lastPercentage) return;
-        lastPercentage = percentage;
-        DownloadEvents.emit('progress', { postId, percentage });
-      });
+      const download = (url: string) =>
+        createDownloadResumable(url, localUri, {}, ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
+          if (!totalBytesExpectedToWrite || totalBytesExpectedToWrite <= 0) return;
+          const percentage = Math.min(
+            100,
+            Math.round((totalBytesWritten / totalBytesExpectedToWrite) * 100)
+          );
+          // Only notify on change — the native callback fires far more often
+          // than the UI needs to re-render.
+          if (percentage === lastPercentage) return;
+          lastPercentage = percentage;
+          DownloadEvents.emit('progress', { postId, percentage });
+        }).downloadAsync();
 
-      const result = await resumable.downloadAsync();
+      let result = await download(videoUrl);
+      // The feed URL can expire or be CDN-restricted; fall back to the extractor
+      // once rather than losing the reel.
+      if ((!result || result.status !== 200) && videoUrl === feedUrl) {
+        this.log(
+          `↩ Feed URL refused (HTTP ${result ? result.status : 'none'}), asking the extractor: ${postId}`
+        );
+        videoUrl = (await extractVideoUrl(originalUrl)).videoUrl;
+        result = await download(videoUrl);
+      }
       if (!result) throw new ApiError('SERVER', 'Download produced no result');
       if (result.status !== 200) {
         throw new ApiError('SERVER', `Download failed (HTTP ${result.status})`, {

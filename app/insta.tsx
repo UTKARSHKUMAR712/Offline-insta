@@ -5,7 +5,7 @@ import { useFocusEffect } from 'expo-router';
 import { DownloadService, DownloadEvents } from '../services/download';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
-import { describeApiError, isInstagramUrl, parseInstagramUrl } from '../services/api';
+import { ApiError, describeApiError, isInstagramUrl, parseInstagramUrl } from '../services/api';
 import {
   AUTO_SCROLL_MAX_ATTEMPTS,
   AUTO_SCROLL_MAX_STALLS,
@@ -90,10 +90,14 @@ export default function HomeScreen() {
       // Allow a later retry if the user reopens this reel.
       lastHandledRef.current = null;
       // A reel that failed should not be dropped: put it back in the queue so a
-      // later step tries again, until it has used up its attempts.
+      // later step tries again, until it has used up its attempts. A photo post
+      // or a deleted reel will never succeed, so those are left out.
+      const permanent = e instanceof ApiError && !e.retryable;
       const attempts = (autoScrollAttemptsRef.current.get(target.shortcode) ?? 0) + 1;
       autoScrollAttemptsRef.current.set(target.shortcode, attempts);
-      if (attempts < AUTO_SCROLL_MAX_ATTEMPTS) {
+      if (permanent) {
+        logLine(`>> auto: skipping ${target.shortcode}, it will not succeed on a retry`);
+      } else if (attempts < AUTO_SCROLL_MAX_ATTEMPTS) {
         autoScrollQueuedRef.current.delete(target.shortcode);
         logLine(`>> auto: ${target.shortcode} failed, will retry (attempt ${attempts})`);
       } else {

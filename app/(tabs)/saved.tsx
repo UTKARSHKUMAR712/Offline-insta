@@ -142,6 +142,7 @@ const SavedReelItem = React.memo(function SavedReelItem({ item, isActive, itemHe
   const palette = usePalette();
   const [isMuted, setIsMuted] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
+  const [showControls, setShowControls] = useState(false);
   const [captionExpanded, setCaptionExpanded] = useState(false);
 
   const player = useVideoPlayer(item.localUri, p => {
@@ -154,6 +155,18 @@ const SavedReelItem = React.memo(function SavedReelItem({ item, isActive, itemHe
     if (isActive && !isPaused) player.play();
     else { player.pause(); if (!isActive) player.currentTime = 0; }
   }, [isActive, isPaused, player]);
+
+  // Coming back to a reel starts it playing again, controls hidden. Adjusted
+  // during render (the React pattern) instead of in an effect, which would paint
+  // one extra frame with the stale controls.
+  const [wasActive, setWasActive] = useState(isActive);
+  if (wasActive !== isActive) {
+    setWasActive(isActive);
+    if (!isActive) {
+      setIsPaused(false);
+      setShowControls(false);
+    }
+  }
 
   // Switching tabs must silence the reel: this screen stays mounted behind them.
   useFocusEffect(
@@ -175,11 +188,19 @@ const SavedReelItem = React.memo(function SavedReelItem({ item, isActive, itemHe
 
   useEffect(() => { player.muted = isMuted; }, [isMuted, player]);
 
+  // Controls stay hidden until tapped: a middle tap pauses and reveals the play
+  // badge with the mute toggle above it, a second tap plays and hides them.
   const togglePlayPause = () => {
     const next = !isPaused;
     setIsPaused(next);
+    setShowControls(next);
     if (next) player.pause();
     else player.play();
+  };
+
+  const toggleMute = () => {
+    setIsMuted(m => !m);
+    setShowControls(true);
   };
 
   const handleUnsave = async () => {
@@ -232,30 +253,35 @@ const SavedReelItem = React.memo(function SavedReelItem({ item, isActive, itemHe
         />
       </Pressable>
 
-      {/* Mute above the play button, clear of dead centre so a tap in the
-          middle still plays/pauses instead of muting. */}
-      <View style={styles.centerControls} pointerEvents="box-none">
-        <Pressable
-          onPress={() => setIsMuted(m => !m)}
-          style={[styles.circleButton, styles.mutePosition]}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel={isMuted ? 'Unmute reel' : 'Mute reel'}
-        >
-          <Ionicons name={isMuted ? 'volume-mute' : 'volume-high'} size={18} color="white" />
-        </Pressable>
-        {isPaused && (
+      {/* Hidden until the reel is paused; the mute circle then sits above the
+          play badge, clear of dead centre so the middle stays a play/pause tap. */}
+      {showControls && (
+        <View style={styles.centerControls} pointerEvents="box-none">
+          <Pressable
+            onPress={toggleMute}
+            style={[styles.circleButton, styles.mutePosition]}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={isMuted ? 'Unmute reel' : 'Mute reel'}
+          >
+            <Ionicons name={isMuted ? 'volume-mute' : 'volume-high'} size={18} color="white" />
+          </Pressable>
           <Pressable
             onPress={togglePlayPause}
             style={[styles.playButton, styles.playPosition]}
             hitSlop={8}
             accessibilityRole="button"
-            accessibilityLabel="Play reel"
+            accessibilityLabel={isPaused ? 'Play reel' : 'Pause reel'}
           >
-            <Ionicons name="play" size={34} color="white" style={styles.playIcon} />
+            <Ionicons
+              name={isPaused ? 'play' : 'pause'}
+              size={34}
+              color="white"
+              style={isPaused ? styles.playIcon : undefined}
+            />
           </Pressable>
-        )}
-      </View>
+        </View>
+      )}
 
       <View style={styles.bottomOverlay} pointerEvents="box-none">
         <Text style={styles.titleText} numberOfLines={1}>

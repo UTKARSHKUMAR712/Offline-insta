@@ -85,11 +85,28 @@ export function isAllowedVideoUrl(url: string): boolean {
   }
 }
 
+const IMAGE_EXTENSION = /\.(jpe?g|png|webp|heic|gif|avif)$/i;
+
+/**
+ * Instagram serves photo posts (and its bot fallback) as a `cdninstagram.com`
+ * `.jpg`. The extractor hands those back in `videoUrl`, so without this check a
+ * still image gets saved as `reel_<id>.mp4` — a file with no video track and no
+ * audio at all.
+ */
+export function isImageMediaUrl(url: string): boolean {
+  try {
+    return IMAGE_EXTENSION.test(new URL(url).pathname);
+  } catch {
+    return false;
+  }
+}
+
 // ─── Errors ─────────────────────────────────────────────────────────────────
 export type ApiErrorCode =
   | 'INVALID_URL'
   | 'UNSUPPORTED_URL'
   | 'EXTRACTION_FAILED'
+  | 'NOT_VIDEO'
   | 'NOT_FOUND'
   | 'PRIVATE'
   | 'RATE_LIMITED'
@@ -126,6 +143,8 @@ export function describeApiError(error: unknown): string {
       return 'That reel is private, deleted, or unavailable.';
     case 'EXTRACTION_FAILED':
       return 'Instagram did not return a video for this link. It may be a photo post, private, or region-locked.';
+    case 'NOT_VIDEO':
+      return 'That post is a photo, so there is no video to save.';
     case 'RATE_LIMITED':
       return 'Too many requests right now. Try again in a few seconds.';
     case 'TIMEOUT':
@@ -238,6 +257,11 @@ async function requestOnce(postUrl: string): Promise<ExtractResult> {
   }
   if (!isAllowedVideoUrl(videoUrl)) {
     throw new ApiError('BAD_RESPONSE', 'Extractor returned a non-Instagram CDN URL');
+  }
+  // An image is not a video: saving it would give a silent, unplayable file.
+  // Not retryable — the post is a photo, so asking again changes nothing.
+  if (body?.meta?.type === 'image' || body?.meta?.source === 'googlebot-fallback-image' || isImageMediaUrl(videoUrl)) {
+    throw new ApiError('NOT_VIDEO', 'Extractor returned an image instead of a video');
   }
 
   return { videoUrl, meta: body?.meta };

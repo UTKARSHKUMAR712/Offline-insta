@@ -23,6 +23,12 @@ export interface ReelData {
 export interface ReelMetadata {
   author?: string;
   caption?: string;
+  /**
+   * Progressive MP4 URL Instagram itself handed the feed. It carries the audio
+   * track, so downloading from it is both faster and guaranteed to have sound;
+   * it expires after a few hours, so it is only used when fresh.
+   */
+  videoUrl?: string;
 }
 
 export interface LibraryStats {

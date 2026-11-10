@@ -91,24 +91,34 @@ DownloadService.downloadReel(url, { source })   ← deduped per shortcode
         ├─ paused? (automatic jobs only) → resolve null
         ├─ already in catalog?           → resolve existing entry
         ▼
-SerialQueue ──► extractVideoUrl() ──► createDownloadResumable() ──► documentDirectory/reel_<id>.mp4
+SerialQueue ──► feed video URL? ──► extractVideoUrl() fallback
+        │
+        ├─ feed URL (progressive MP4, has audio) ──► createDownloadResumable()
+        └─ 403/expired feed URL ──► extractVideoUrl() ──► createDownloadResumable()
+        │
+        └─► documentDirectory/reel_<id>.mp4
         │                                        │
         │                                        └─ progress events → DownloadTray
         ▼
 Catalog.upsert() → success event / error event → toast
 ```
 
+Instagram serves photo posts (and its bot fallback) as a `.jpg` in the extractor's `videoUrl`.
+`isImageMediaUrl()` / `meta.type === 'image'` reject those as `NOT_VIDEO`, so a photo is never
+written as a silent `reel_<id>.mp4`; the error is not retried.
+
 Failed or aborted downloads delete their partial file; every reel stores its author (when the
 URL carries one), byte size and media type, and older entries are migrated on first read.
 
 ### Offline feed
 
-`(tabs)/explore.tsx` and `(tabs)/saved.tsx` are full-screen vertical feeds. A tap anywhere on the
-video plays or pauses it (the play badge appears when paused, with a mute toggle above it, kept
-off dead centre so it does not eat the pause tap). Long captions are clipped to two lines and open
-with *more*; the username and caption come from the data stored at download time. Both screens
-pause the player on blur, so leaving the tab — or opening another screen — stops the audio instead
-of letting the reel play on behind it.
+`(tabs)/explore.tsx` and `(tabs)/saved.tsx` are full-screen vertical feeds. Controls are hidden
+until the video is tapped: a tap in the middle pauses and reveals the play badge with a mute
+toggle above it (kept off dead centre so it does not eat the pause tap); tapping the mute circle
+swaps its icon and keeps the badge on screen, and tapping the middle again plays and hides both.
+Long captions are clipped to two lines and open with *more*; the username and caption come from
+the data stored at download time. Both screens pause the player on blur, so leaving the tab — or
+opening another screen — stops the audio instead of letting the reel play on behind it.
 
 ### Auto-scroll
 

@@ -1,4 +1,10 @@
-import { ApiError, authorFromUrl, describeApiError, parseInstagramUrl } from '../services/api';
+import {
+  ApiError,
+  authorFromUrl,
+  describeApiError,
+  isImageMediaUrl,
+  parseInstagramUrl,
+} from '../services/api';
 
 describe('parseInstagramUrl', () => {
   it.each([
@@ -47,6 +53,30 @@ describe('authorFromUrl', () => {
   it('returns null when the link has no handle', () => {
     expect(authorFromUrl('https://www.instagram.com/reel/DS5SxvLgbc8/')).toBeNull();
     expect(authorFromUrl('nonsense')).toBeNull();
+  });
+});
+
+describe('isImageMediaUrl', () => {
+  it('recognises Instagram photo URLs', () => {
+    expect(
+      isImageMediaUrl(
+        'https://scontent-iad6-1.cdninstagram.com/v/t39.30808-6/899611524_167_n.jpg?stp=c216.0.648.648a_dst-jpg'
+      )
+    ).toBe(true);
+    expect(isImageMediaUrl('https://x.cdninstagram.com/a/b.webp')).toBe(true);
+  });
+
+  it('leaves progressive MP4s alone', () => {
+    expect(
+      isImageMediaUrl('https://scontent-iad3-1.cdninstagram.com/o1/v/t2/f2/m86/AQP-123.mp4?efg=x')
+    ).toBe(false);
+    expect(isImageMediaUrl('https://scontent-iad3-1.cdninstagram.com/v/t50.2886-16/photo-123.mp4')).toBe(
+      false
+    );
+  });
+
+  it('does not throw on garbage', () => {
+    expect(isImageMediaUrl('not a url')).toBe(false);
   });
 });
 
