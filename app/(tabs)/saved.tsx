@@ -223,9 +223,11 @@ const SavedReelItem = React.memo(function SavedReelItem({ item, isActive, itemHe
 
   const handleSaveToGallery = async () => {
     try {
-      const permission = await MediaLibrary.requestPermissionsAsync();
+      // Write-only: saving a file needs no read access, and asking for the full
+      // set makes Android demand the audio permission this app never declared.
+      const permission = await MediaLibrary.requestPermissionsAsync(true);
       if (!permission.granted) {
-        Alert.alert('Permission needed', 'Allow photo library access to save reels to your gallery.');
+        Alert.alert('Permission needed', 'Allow access to save reels to your gallery.');
         return;
       }
       await MediaLibrary.Asset.create(item.localUri);
@@ -240,18 +242,21 @@ const SavedReelItem = React.memo(function SavedReelItem({ item, isActive, itemHe
 
   return (
     <View style={[styles.reelContainer, { height: itemHeight }]}>
+      {/* The native video surface swallows touches on Android, so it sits below
+          a transparent tap layer instead of inside the Pressable. */}
+      <VideoView
+        player={player}
+        style={StyleSheet.absoluteFill}
+        contentFit="cover"
+        nativeControls={false}
+        pointerEvents="none"
+      />
       <Pressable
         style={StyleSheet.absoluteFill}
         onPress={togglePlayPause}
-        accessibilityLabel="Play or pause reel"
-      >
-        <VideoView
-          player={player}
-          style={StyleSheet.absoluteFill}
-          contentFit="cover"
-          nativeControls={false}
-        />
-      </Pressable>
+        accessibilityRole="button"
+        accessibilityLabel={isPaused ? 'Play reel' : 'Pause reel'}
+      />
 
       {/* Hidden until the reel is paused; the mute circle then sits above the
           play badge, clear of dead centre so the middle stays a play/pause tap. */}
