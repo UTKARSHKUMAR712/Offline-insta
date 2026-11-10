@@ -1,10 +1,19 @@
 import { StyleSheet, View, Text, TextInput, Modal, Pressable, KeyboardAvoidingView, Platform, Alert } from 'react-native';
 import { WebView } from 'react-native-webview';
-import { useState, useRef, type ComponentRef } from 'react';
+import { useState, useRef, useCallback, type ComponentRef } from 'react';
+import { useFocusEffect } from 'expo-router';
 import { DownloadService, DownloadEvents } from '../services/download';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { describeApiError, isInstagramUrl, parseInstagramUrl } from '../services/api';
+import {
+  AUTO_SCROLL_MAX_STALLS,
+  AUTO_SCROLL_SCRIPT,
+  AUTO_SCROLL_STEP_SCRIPT,
+  getAutoScrollEnabled,
+  nextAutoScrollDelay,
+  type AutoScrollResult,
+} from '../services/autoScroll';
 
 export default function HomeScreen() {
   const webViewRef = useRef<ComponentRef<typeof WebView>>(null);
@@ -19,6 +28,28 @@ export default function HomeScreen() {
   const [inputUrl, setInputUrl] = useState('');
   const [isDownloading, setIsDownloading] = useState(false);
 
+  // Auto-scroll: the setting lives in AsyncStorage, the loop below is paused
+  // whenever a download is running so a reel is never skipped before it lands.
+  const [autoScrollActive, setAutoScrollActive] = useState(false);
+  const downloadsInFlightRef = useRef(0);
+  const autoScrollStallsRef = useRef(0);
+  const autoScrollLastUrlRef = useRef('');
+
+  // Re-read the setting on focus: it is toggled from the Settings tab.
+  useFocusEffect(
+    useCallback(() => {
+      let isActive = true;
+      getAutoScrollEnabled()
+        .then(enabled => {
+          if (isActive) setAutoScrollActive(enabled);
+        })
+        .catch(() => {});
+      return () => {
+        isActive = false;
+      };
+    }, [])
+  );
+
   const handleDetectedUrl = async (url: string) => {
     if (!url || !url.startsWith('http')) return;
     setCurrentUrl(url);
@@ -29,6 +60,7 @@ export default function HomeScreen() {
 
     lastHandledRef.current = target.shortcode;
     DownloadEvents.emit('log', '>> Reel detected, downloading...');
+    downloadsInFlightRef.current += 1;
     try {
       await DownloadService.downloadReel(url);
     } catch (e: any) {
@@ -36,6 +68,8 @@ export default function HomeScreen() {
       DownloadEvents.emit('log', '>> ' + describeApiError(e));
       // Allow a later retry if the user reopens this reel.
       lastHandledRef.current = null;
+    } finally {
+      downloadsInFlightRef.current -= 1;
     }
   };
 
@@ -86,13 +120,78 @@ export default function HomeScreen() {
       } catch (e) {}
     })();
     true;
-  `;
+  ` + AUTO_SCROLL_SCRIPT;
+
+  /**
+   * Gives up for this session when the feed stops moving: a reel page, a login
+   * wall or a single mounted video all report the same non-progress, and
+   * retrying forever would just burn battery and requests.
+   */
+  const handleAutoScrollResult = (result: AutoScrollResult) => {
+    if (result.ok) {
+      if (result.url && result.url !== autoScrollLastUrlRef.current) {
+        autoScrollLastUrlRef.current = result.url;
+        autoScrollStallsRef.current = 0;
+      } else {
+        autoScrollStallsRef.current += 1;
+      }
+    } else if (result.reason !== 'comments-open') {
+      // An open comments panel is transient: keep polling, do not count it.
+      autoScrollStallsRef.current += 1;
+    }
+
+    if (autoScrollStallsRef.current < AUTO_SCROLL_MAX_STALLS) return;
+
+    autoScrollStallsRef.current = 0;
+    setAutoScrollActive(false);
+    DownloadEvents.emit('log', '>> Auto-scroll stopped: the feed did not advance');
+  };
+
+  // Auto-scroll loop: React Native owns the clock, so a step never fires while
+  // a download is still running. Running under useFocusEffect keeps it from
+  // advancing a WebView the user has navigated away from.
+  useFocusEffect(
+    useCallback(() => {
+      if (!autoScrollActive) return;
+
+      let cancelled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+
+      autoScrollStallsRef.current = 0;
+      autoScrollLastUrlRef.current = '';
+
+      function schedule() {
+        if (cancelled) return;
+        timer = setTimeout(tick, nextAutoScrollDelay());
+      }
+
+      function tick() {
+        timer = null;
+        if (cancelled) return;
+        if (webViewRef.current && downloadsInFlightRef.current === 0) {
+          webViewRef.current.injectJavaScript(AUTO_SCROLL_STEP_SCRIPT);
+        }
+        schedule();
+      }
+
+      schedule();
+
+      return () => {
+        cancelled = true;
+        if (timer) clearTimeout(timer);
+      };
+    }, [autoScrollActive])
+  );
 
   const onMessage = async (event: any) => {
     try {
       const data = JSON.parse(event.nativeEvent.data || '{}');
       if (data.type === 'URL_CHANGE' && data.url) {
         void handleDetectedUrl(data.url);
+        return;
+      }
+      if (data.type === 'AUTO_SCROLL') {
+        handleAutoScrollResult(data as AutoScrollResult);
         return;
       }
       if (data.type === 'CLIPBOARD_WRITE' && data.text) {
@@ -123,12 +222,14 @@ export default function HomeScreen() {
     setInputUrl('');
 
     DownloadEvents.emit('log', '>> Manual download started...');
+    downloadsInFlightRef.current += 1;
     try {
       // Resolves only once the file is on disk (or was already saved).
       await DownloadService.downloadReel(url, { source: 'manual' });
     } catch (e: any) {
       Alert.alert('Download failed', describeApiError(e));
     } finally {
+      downloadsInFlightRef.current -= 1;
       setIsDownloading(false);
     }
   };

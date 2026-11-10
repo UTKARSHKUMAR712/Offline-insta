@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -9,13 +8,13 @@ import {
   Text,
   View,
 } from 'react-native';
-import { WebView } from 'react-native-webview';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { usePalette } from '../../hooks/use-palette';
 import { DownloadService, type LibraryStats } from '../../services/download';
+import { getAutoScrollEnabled, setAutoScrollEnabled } from '../../services/autoScroll';
 import { formatBytes } from '../../utils/format';
 
 const EMPTY_STATS: LibraryStats = { count: 0, savedCount: 0, bytes: 0 };
@@ -26,18 +25,20 @@ export default function SettingsScreen() {
   const insets = useSafeAreaInsets();
   const [autoDelete, setAutoDelete] = useState(false);
   const [pauseDownloads, setPauseDownloads] = useState(false);
+  const [autoScroll, setAutoScroll] = useState(false);
   const [stats, setStats] = useState<LibraryStats>(EMPTY_STATS);
   const [loading, setLoading] = useState(true);
-  const [showLogoutView, setShowLogoutView] = useState(false);
 
   useEffect(() => {
     const loadSettings = async () => {
-      const [adEnabled, pdEnabled] = await Promise.all([
+      const [adEnabled, pdEnabled, asEnabled] = await Promise.all([
         DownloadService.getAutoDeleteEnabled(),
         DownloadService.getDownloadsPaused(),
+        getAutoScrollEnabled(),
       ]);
       setAutoDelete(adEnabled);
       setPauseDownloads(pdEnabled);
+      setAutoScroll(asEnabled);
       setLoading(false);
     };
     loadSettings().catch(() => setLoading(false));
@@ -67,19 +68,9 @@ export default function SettingsScreen() {
     await DownloadService.setDownloadsPaused(value);
   };
 
-  const handleLogout = () => {
-    Alert.alert(
-      'Log out of Instagram',
-      'This will clear your Instagram session and cookies from the app. You will need to log in again next time.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Log Out',
-          style: 'destructive',
-          onPress: () => setShowLogoutView(true),
-        },
-      ]
-    );
+  const toggleAutoScroll = async (value: boolean) => {
+    setAutoScroll(value);
+    await setAutoScrollEnabled(value);
   };
 
   if (loading) {
@@ -137,41 +128,22 @@ export default function SettingsScreen() {
           onValueChange={togglePauseDownloads}
         />
 
-        <Pressable
-          onPress={handleLogout}
-          accessibilityRole="button"
-          accessibilityLabel="Log out of Instagram"
-          style={[styles.logoutRow, { borderColor: palette.danger, backgroundColor: palette.surface }]}
-        >
-          <Text style={[styles.logoutTitle, { color: palette.danger }]}>Log Out of Instagram</Text>
-          <Text style={[styles.description, { color: palette.textMuted }]}>
-            Clears your Instagram session cookies from this app. You will need to log in again next
-            time.
-          </Text>
-        </Pressable>
-      </ScrollView>
+        <SettingRow
+          title="Auto-Scroll Reels"
+          description="Advance to the next reel every 2–4 seconds in the Instagram browser, downloading each one on the way. Pauses while a download is running and stops if the feed does not move."
+          value={autoScroll}
+          onValueChange={toggleAutoScroll}
+        />
 
-      {/* Hidden WebView used purely to clear Instagram cookies by loading the logout URL */}
-      {showLogoutView && (
-        <View style={{ height: 0, overflow: 'hidden' }}>
-          <WebView
-            source={{ uri: 'https://www.instagram.com/accounts/logout/' }}
-            // This is a standard web navigation to Instagram's own logout page.
-            // No JS is injected. Instagram itself handles the session clear.
-            onNavigationStateChange={state => {
-              // Once Instagram redirects us away from the logout page, we're done.
-              if (state.url && !state.loading) {
-                setShowLogoutView(false);
-                Alert.alert('Logged Out', 'Your Instagram session has been cleared. You will be asked to log in again next time.');
-              }
-            }}
-            onError={() => {
-              setShowLogoutView(false);
-              Alert.alert('Logged Out', 'Your Instagram cookies have been cleared.');
-            }}
-          />
-        </View>
-      )}
+        {/*
+          The old "Log Out of Instagram" row is gone on purpose. It loaded
+          /accounts/logout/ in a hidden WebView, which cannot clear cookies
+          (Instagram needs a POST + CSRF token) and still claimed success.
+          A real session clear needs the platform cookie store, which means a
+          native module and a development build — so the feature is removed
+          rather than lying to the user. See docs/ANALYSIS.md, item 16.
+        */}
+      </ScrollView>
     </View>
   );
 }
@@ -240,11 +212,4 @@ const styles = StyleSheet.create({
   textContainer: { flex: 1 },
   rowTitle: { fontSize: 15, fontWeight: '600', marginBottom: 6 },
   description: { fontSize: 12, lineHeight: 17 },
-  logoutRow: {
-    borderWidth: 1,
-    padding: 16,
-    borderRadius: 16,
-    marginTop: 24,
-  },
-  logoutTitle: { fontSize: 15, fontWeight: '700', marginBottom: 6 },
 });
