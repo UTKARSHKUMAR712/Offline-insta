@@ -56,7 +56,11 @@ export default function HomeScreen() {
     setCurrentUrl(url);
 
     const target = parseInstagramUrl(url);
-    if (!target) return; // feeds, profiles, explore, stories, audio pages…
+    if (!target) {
+      // feeds, profiles, explore, stories, audio pages…
+      if (__DEV__) DownloadEvents.emit('log', `>> page visited: ${new URL(url).pathname}`);
+      return;
+    }
     if (lastHandledRef.current === target.shortcode) return;
 
     lastHandledRef.current = target.shortcode;
@@ -129,12 +133,36 @@ export default function HomeScreen() {
    * retrying forever would just burn battery and requests.
    */
   const handleAutoScrollResult = (result: AutoScrollResult) => {
+    const path = (value: string) => {
+      if (!value) return '-';
+      try {
+        const url = new URL(value);
+        return url.pathname + url.search;
+      } catch {
+        return value;
+      }
+    };
+    const diag = result.diag;
+    DownloadEvents.emit(
+      'log',
+      `>> auto ${result.reason || 'step'} · reel ${result.index + 1}/${result.count} · href ${path(
+        result.href
+      )} · postLinks ${diag ? diag.postLinks : '?'} · canon ${path(diag ? diag.canonical : '')} · og ${path(
+        diag ? diag.ogUrl : ''
+      )} · page ${path(result.url)}`
+    );
+
     // An open comments panel is transient: the reel under it is not changing.
     if (result.reason === 'comments-open') return;
 
     // Download from the reel link the page reported rather than waiting for a
-    // URL change, which a programmatic scroll does not reliably produce.
-    const target = parseInstagramUrl(result.href || '') ?? parseInstagramUrl(result.url || '');
+    // URL change, which a programmatic scroll does not reliably produce. The
+    // canonical/og:url metadata is the fallback when the card has no anchors.
+    const target =
+      parseInstagramUrl(result.href || '') ??
+      parseInstagramUrl(result.url || '') ??
+      parseInstagramUrl(diag?.canonical || '') ??
+      parseInstagramUrl(diag?.ogUrl || '');
     if (target) {
       void handleDetectedUrl(target.canonicalUrl);
       if (target.shortcode !== autoScrollLastShortcodeRef.current) {
@@ -175,12 +203,15 @@ export default function HomeScreen() {
       function tick() {
         timer = null;
         if (cancelled) return;
-        if (webViewRef.current && downloadsInFlightRef.current === 0) {
+        if (downloadsInFlightRef.current > 0) {
+          DownloadEvents.emit('log', '>> auto: holding the step, a download is running');
+        } else if (webViewRef.current) {
           webViewRef.current.injectJavaScript(AUTO_SCROLL_STEP_SCRIPT);
         }
         schedule();
       }
 
+      DownloadEvents.emit('log', '>> auto-scroll on · one step every 7–20s');
       schedule();
 
       return () => {

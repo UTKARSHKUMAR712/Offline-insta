@@ -19,6 +19,13 @@ export type AutoScrollResult = {
   /** Permalink of the reel on screen, read from the DOM. Empty when absent. */
   href: string;
   url: string;
+  /** Why `href` was empty, for the on-device troubleshooting log. */
+  diag?: {
+    postLinks: number;
+    canonical: string;
+    ogUrl: string;
+    title: string;
+  };
 };
 
 export async function getAutoScrollEnabled(): Promise<boolean> {
@@ -170,6 +177,35 @@ export const AUTO_SCROLL_SCRIPT = `
     return '';
   }
 
+  function metaValue(selector) {
+    var node = document.querySelector(selector);
+    if (!node) return '';
+    return node.getAttribute('content') || node.getAttribute('href') || '';
+  }
+
+  // Every post link Instagram put in the document. Zero means the card has no
+  // anchors at all and the permalink cannot be read from the DOM.
+  function postLinkCount() {
+    var links = document.querySelectorAll('a[href]');
+    var count = 0;
+    for (var i = 0; i < links.length; i++) {
+      var raw = links[i].getAttribute('href') || '';
+      try {
+        if (permalinkPath(new URL(raw, location.origin).pathname)) count++;
+      } catch (e) {}
+    }
+    return count;
+  }
+
+  function diag() {
+    return {
+      postLinks: postLinkCount(),
+      canonical: metaValue('link[rel="canonical"]'),
+      ogUrl: metaValue('meta[property="og:url"]'),
+      title: document.title || ''
+    };
+  }
+
   function report(result) {
     try {
       window.ReactNativeWebView.postMessage(JSON.stringify(result));
@@ -185,7 +221,8 @@ export const AUTO_SCROLL_SCRIPT = `
       count: list.length,
       index: -1,
       href: list.length ? permalinkFor(list[0]) : '',
-      url: location.href
+      url: location.href,
+      diag: diag()
     };
 
     if (commentsOpen()) {
