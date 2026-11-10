@@ -25,6 +25,8 @@ export type AutoScrollResult = {
     canonical: string;
     ogUrl: string;
     title: string;
+    captured: number;
+    lastCode: string;
   };
 };
 
@@ -89,6 +91,78 @@ export const AUTO_SCROLL_SCRIPT = `
     if (!/^[A-Za-z0-9_-]{8,15}$/.test(id)) return '';
     return '/' + kind + '/' + id + '/';
   }
+
+  // ── Shortcode capture, for layouts that render no post links ──
+  // Instagram fetches each reel's data as you scroll; when the card has no
+  // anchor, the shortcodes in those responses are the only DOM-external way to
+  // name the reel on screen.
+  var captured = [];
+
+  function interesting(url) {
+    return !!url && (url.indexOf('/api/v1/') !== -1 || url.indexOf('/graphql') !== -1);
+  }
+
+  function scanResponse(text) {
+    if (!text) return;
+    if (text.indexOf('video_versions') === -1 && text.indexOf('clips_metadata') === -1) return;
+    var slice = text.slice(0, 3000000);
+    var pattern = /"code":"([A-Za-z0-9_-]{8,15})"/g;
+    var match;
+    while ((match = pattern.exec(slice))) {
+      var code = match[1];
+      if (captured.indexOf(code) === -1) {
+        captured.push(code);
+        if (captured.length > 50) captured.shift();
+      }
+    }
+  }
+
+  function watchNetwork() {
+    if (window.__igReelNetWatched) return;
+    window.__igReelNetWatched = true;
+
+    var originalFetch = window.fetch;
+    if (typeof originalFetch === 'function') {
+      window.fetch = function () {
+        var call = originalFetch.apply(this, arguments);
+        try {
+          var first = arguments[0];
+          var url = typeof first === 'string' ? first : (first && first.url) || '';
+          if (interesting(url)) {
+            call.then(function (response) {
+              try {
+                response.clone().text().then(scanResponse, function () {});
+              } catch (e) {}
+            }, function () {});
+          }
+        } catch (e) {}
+        return call;
+      };
+    }
+
+    var XHR = window.XMLHttpRequest;
+    if (XHR && XHR.prototype) {
+      var open = XHR.prototype.open;
+      var send = XHR.prototype.send;
+      XHR.prototype.open = function (method, url) {
+        this.__igUrl = url;
+        return open.apply(this, arguments);
+      };
+      XHR.prototype.send = function () {
+        var request = this;
+        if (interesting(request.__igUrl)) {
+          request.addEventListener('load', function () {
+            try {
+              scanResponse(request.responseText);
+            } catch (e) {}
+          });
+        }
+        return send.apply(this, arguments);
+      };
+    }
+  }
+
+  watchNetwork();
 
   function viewport() {
     return {
@@ -174,6 +248,11 @@ export const AUTO_SCROLL_SCRIPT = `
     try {
       if (permalinkPath(location.pathname)) return location.origin + permalinkPath(location.pathname);
     } catch (e) {}
+    // Last resort: the newest reel shortcode Instagram fetched, which is the one
+    // it is about to or has just shown.
+    if (captured.length) {
+      return 'https://www.instagram.com/reel/' + captured[captured.length - 1] + '/';
+    }
     return '';
   }
 
@@ -202,7 +281,9 @@ export const AUTO_SCROLL_SCRIPT = `
       postLinks: postLinkCount(),
       canonical: metaValue('link[rel="canonical"]'),
       ogUrl: metaValue('meta[property="og:url"]'),
-      title: document.title || ''
+      title: document.title || '',
+      captured: captured.length,
+      lastCode: captured.length ? captured[captured.length - 1] : ''
     };
   }
 

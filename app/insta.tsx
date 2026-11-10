@@ -15,6 +15,12 @@ import {
   type AutoScrollResult,
 } from '../services/autoScroll';
 
+/** Tray log plus the Metro console, so auto-scroll can be debugged from either. */
+function logLine(message: string) {
+  if (__DEV__) console.log(message);
+  DownloadEvents.emit('log', message);
+}
+
 export default function HomeScreen() {
   const webViewRef = useRef<ComponentRef<typeof WebView>>(null);
 
@@ -58,7 +64,7 @@ export default function HomeScreen() {
     const target = parseInstagramUrl(url);
     if (!target) {
       // feeds, profiles, explore, stories, audio pages…
-      if (__DEV__) DownloadEvents.emit('log', `>> page visited: ${new URL(url).pathname}`);
+      logLine(`>> page visited: ${new URL(url).pathname}`);
       return;
     }
     if (lastHandledRef.current === target.shortcode) return;
@@ -143,13 +149,14 @@ export default function HomeScreen() {
       }
     };
     const diag = result.diag;
-    DownloadEvents.emit(
-      'log',
+    logLine(
       `>> auto ${result.reason || 'step'} · reel ${result.index + 1}/${result.count} · href ${path(
         result.href
-      )} · postLinks ${diag ? diag.postLinks : '?'} · canon ${path(diag ? diag.canonical : '')} · og ${path(
-        diag ? diag.ogUrl : ''
-      )} · page ${path(result.url)}`
+      )} · postLinks ${diag ? diag.postLinks : '?'} · captured ${diag ? diag.captured : '?'} (${
+        diag ? diag.lastCode || '-' : '-'
+      }) · canon ${path(diag ? diag.canonical : '')} · og ${path(diag ? diag.ogUrl : '')} · page ${path(
+        result.url
+      )}`
     );
 
     // An open comments panel is transient: the reel under it is not changing.
@@ -179,7 +186,7 @@ export default function HomeScreen() {
 
     autoScrollStallsRef.current = 0;
     setAutoScrollActive(false);
-    DownloadEvents.emit('log', '>> Auto-scroll stopped: the feed did not advance');
+    logLine('>> Auto-scroll stopped: the feed did not advance');
   };
 
   // Auto-scroll loop: React Native owns the clock, so a step never fires while
@@ -204,14 +211,14 @@ export default function HomeScreen() {
         timer = null;
         if (cancelled) return;
         if (downloadsInFlightRef.current > 0) {
-          DownloadEvents.emit('log', '>> auto: holding the step, a download is running');
+          logLine('>> auto: holding the step, a download is running');
         } else if (webViewRef.current) {
           webViewRef.current.injectJavaScript(AUTO_SCROLL_STEP_SCRIPT);
         }
         schedule();
       }
 
-      DownloadEvents.emit('log', '>> auto-scroll on · one step every 7–20s');
+      logLine('>> auto-scroll on · one step every 7–20s');
       schedule();
 
       return () => {
